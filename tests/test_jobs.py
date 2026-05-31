@@ -409,3 +409,46 @@ def test_job_json_roundtrips_non_ascii_utf8(tmp_path, monkeypatch):
     assert "例え" in raw
     loaded = jobs.Job.load(job.job_id, jobs_dir=tmp_path)
     assert loaded.params == {"seed": "https://例え.jp/ünïcode"}
+
+
+# -- PR 6.2: claimed-depth persistence (resume restores true depth) --------
+
+
+def test_mark_claimed_persists_depth(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+    job.mark_claimed("https://ex.com/deep", depth=3)
+    # 4th tab field carries the depth; first two fields unchanged (compat).
+    line = job.visited_path.read_text().splitlines()[0]
+    assert line.split("\t")[:2] == ["https://ex.com/deep", "claimed"]
+    assert line.split("\t")[3] == "3"
+    assert job.claimed_depth["https://ex.com/deep"] == 3
+
+
+def test_resume_restores_claimed_depth(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+    job.mark_claimed("https://ex.com/deep", depth=4)  # claimed, never completed
+    job.status = JobStatus.INTERRUPTED
+    job.flush(force=True)
+    resumed = jobs.Job.resume(job.job_id, jobs_dir=tmp_path)
+    items = {it.url: it.depth for it in resumed._frontier}
+    assert items["https://ex.com/deep"] == 4  # restored, not reset to 0
+
+
+def test_mark_claimed_default_depth_zero_backward_compatible(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+    job.mark_claimed("https://ex.com/a")  # no depth arg → 0
+    assert job.claimed_depth["https://ex.com/a"] == 0
+
+
+def test_load_visited_without_depth_field_defaults_zero(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+    # Simulate an old 3-field visited.txt line (pre-6.2 format).
+    with job.visited_path.open("a", encoding="utf-8") as f:
+        f.write("https://ex.com/old\tclaimed\t5\n")
+    loaded = jobs.Job.load(job.job_id, jobs_dir=tmp_path)
+    assert "https://ex.com/old" in loaded.claimed
+    assert loaded.claimed_depth.get("https://ex.com/old", 0) == 0

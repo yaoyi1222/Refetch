@@ -146,6 +146,9 @@ class Job:
         # In-memory state, hydrated from side files on load/resume.
         self.claimed: set[str] = set()
         self.completed: set[str] = set()
+        # url -> depth at which it was claimed (PR 6.2); lets resume re-enqueue
+        # claimed-but-incomplete URLs at their real BFS depth, not seed depth.
+        self.claimed_depth: dict[str, int] = {}
         self._frontier: list[FrontierItem] = []
         self._frontier_lines = 0
         self._shutdown_reason: str | None = None
@@ -222,7 +225,7 @@ class Job:
         pending = {it.url for it in job._frontier}
         for url in job.claimed - job.completed:
             if url not in pending:
-                job.push_frontier(FrontierItem(url, 0))
+                job.push_frontier(FrontierItem(url, job.claimed_depth.get(url, 0)))
         job.status = JobStatus.RUNNING
         write_pid_file(job.pid_path)
         job.flush(force=True)
@@ -262,15 +265,19 @@ class Job:
         self._pages_since_flush = 0
 
     # -- visited (append-only, claimed/completed two-state) ----------------
-    def _append_visited(self, url: str, status: str) -> None:
+    def _append_visited(self, url: str, status: str, depth: int | None = None) -> None:
+        # Format: url \t status \t ts [\t depth]. The optional 4th depth field
+        # (claimed only) is backward-compatible — older 3-field lines parse fine.
+        suffix = f"\t{depth}" if depth is not None else ""
         with self.visited_path.open("a", encoding="utf-8") as f:
-            f.write(f"{url}\t{status}\t{time_ms()}\n")
+            f.write(f"{url}\t{status}\t{time_ms()}{suffix}\n")
             f.flush()
             os.fsync(f.fileno())
 
-    def mark_claimed(self, url: str) -> None:
+    def mark_claimed(self, url: str, depth: int = 0) -> None:
         self.claimed.add(url)
-        self._append_visited(url, "claimed")
+        self.claimed_depth[url] = depth
+        self._append_visited(url, "claimed", depth)
 
     def mark_completed(self, url: str) -> None:
         self.completed.add(url)
@@ -286,6 +293,11 @@ class Job:
             url, status = parts[0], parts[1]
             if status == "claimed":
                 self.claimed.add(url)
+                if len(parts) >= 4:
+                    try:
+                        self.claimed_depth[url] = int(parts[3])
+                    except ValueError:
+                        pass  # corrupt depth field → leave at default 0
             elif status == "completed":
                 self.completed.add(url)
 

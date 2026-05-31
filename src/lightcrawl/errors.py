@@ -35,6 +35,9 @@ class ErrorCode(str, Enum):
     # tags URLs skipped by robots.txt with this and counts them separately from
     # failures; `ok` may still be true.
     ROBOTS_DISALLOWED = "ROBOTS_DISALLOWED"
+    # PR 6.2 — crawl engine. Info-level "expected branch" (design §7): the crawl
+    # hit its --max-pages cap and stopped; the job still finalizes `completed`.
+    CRAWL_MAX_PAGES = "CRAWL_MAX_PAGES"
     UNKNOWN = "UNKNOWN"
 
 
