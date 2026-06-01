@@ -30,6 +30,11 @@ class HttpResult:
     text: str
     content_type: str
     elapsed_ms: int
+    # v0.3 PR 3 — response validators for conditional requests. ``None``
+    # when the origin sends no ETag / Last-Modified. A 304 response is a
+    # normal, returnable status (empty body); only transport errors raise.
+    etag: str | None = None
+    last_modified: str | None = None
 
 
 def fetch(
@@ -84,4 +89,6 @@ def fetch(
         text=r.text,
         content_type=ctype,
         elapsed_ms=elapsed_ms,
+        etag=r.headers.get("etag"),
+        last_modified=r.headers.get("last-modified"),
     )
