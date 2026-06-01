@@ -7,7 +7,8 @@ import json
 import re
 import sys
 
-from . import auth, crawl, jobs, sitemap
+from . import auth, batch, crawl, jobs, sitemap
+from .cache import Cache
 from .errors import ErrorCode, FetchError
 from .jobs import Job, JobStatus
 from .paths import ensure_dirs
@@ -451,15 +452,23 @@ async def _run_map(args: argparse.Namespace) -> int:
 # -- crawl ------------------------------------------------------------------
 
 
-def _resolve_crawl_params(args: argparse.Namespace) -> crawl.CrawlParams:
-    """Map ``crawl`` flags to ``CrawlParams``. Cache flags reuse the shared
-    §3 resolver; unlike fetch, crawl defaults to *cache on, 1h* — when no cache
-    flag is given we fill in the 1h freshness window so re-crawls reuse fetches
-    within the hour (design §3 / §5.5 #9)."""
+def _resolve_cached_cache_kwargs(args: argparse.Namespace) -> dict:
+    """Cache-field resolution for the *batch* subcommands (``crawl`` /
+    ``batch-fetch``), which default to *cache on, 1h* — when no cache flag is
+    given we fill the 1h freshness window so re-runs reuse fetches within the
+    hour (design §3 / §5.5 #9). ``fetch``/``search-and-read`` keep their cache-off
+    default and use ``_resolve_cache_kwargs`` directly."""
     cache = _resolve_cache_kwargs(args, default_store_in_cache=True)
     if (not cache["no_cache"] and not cache["cache_only"]
             and cache["max_age_ms"] is None):
         cache["max_age_ms"] = crawl._DEFAULT_MAX_AGE_MS
+    return cache
+
+
+def _resolve_crawl_params(args: argparse.Namespace) -> crawl.CrawlParams:
+    """Map ``crawl`` flags to ``CrawlParams`` (cache-on/1h default, see
+    ``_resolve_cached_cache_kwargs``)."""
+    cache = _resolve_cached_cache_kwargs(args)
     return crawl.CrawlParams(
         seed=args.url,
         max_depth=args.max_depth,
@@ -612,6 +621,115 @@ def _cmd_jobs(args: argparse.Namespace) -> int:
 
 async def _run_jobs(_: argparse.Namespace) -> int:
     _print({"ok": True, "jobs": jobs.list_jobs()})
+    return 0
+
+
+# -- batch-fetch ------------------------------------------------------------
+
+
+def _read_urls_file(path: str) -> list[str]:
+    """One URL per line; blank lines and ``#`` comments ignored (design §5.7)."""
+    out: list[str] = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if s and not s.startswith("#"):
+                out.append(s)
+    return out
+
+
+def _cmd_batch_fetch(args: argparse.Namespace) -> int:
+    err = _validate_cache_flags(args)
+    if err is not None:
+        _print(err)
+        return 1
+    return _safe_run(_run_batch_fetch(args))
+
+
+async def _run_batch_fetch(args: argparse.Namespace) -> int:
+    urls = list(args.urls or [])
+    if args.urls_file:
+        urls += _read_urls_file(args.urls_file)
+    params = batch.BatchParams(
+        concurrency=args.concurrency,
+        output_format=args.output_format,
+        profile=args.profile,
+        max_inline_tokens=args.max_inline_tokens,
+        timeout_ms=args.timeout_ms,
+        **_resolve_cached_cache_kwargs(args),
+    )
+    router = Router()
+    try:
+        result = await batch.run_batch_fetch(urls, params, router)
+    finally:
+        await router.close()
+    _print(result)
+    return _exit_code(result)
+
+
+# -- cache ------------------------------------------------------------------
+
+
+def _cmd_cache_stats(args: argparse.Namespace) -> int:
+    return _safe_run(_run_cache_stats(args))
+
+
+async def _run_cache_stats(_: argparse.Namespace) -> int:
+    cache = Cache()
+    _print({
+        "ok": True,
+        "stats": dataclasses.asdict(cache.stats()),
+        # v0.2 left dumps under ~/.lightcrawl/dumps/; v0.3 writes to
+        # cache/dumps/. Surface the legacy footprint so users can rm it.
+        "legacy_dumps_bytes": cache.legacy_dumps_usage(),
+    })
+    return 0
+
+
+def _cmd_cache_clear(args: argparse.Namespace) -> int:
+    return _safe_run(_run_cache_clear(args))
+
+
+async def _run_cache_clear(args: argparse.Namespace) -> int:
+    older = getattr(args, "older_than_ms", None)
+    host = getattr(args, "host", None)
+    clear_all = getattr(args, "clear_all", False)
+    scopes = [older is not None, host is not None, clear_all]
+    n = sum(scopes)
+    if n == 0:
+        # Refuse a bare destructive wipe — must be explicit (chosen option A).
+        _print({
+            "ok": False,
+            "error_code": ErrorCode.CACHE_CLEAR_NO_SCOPE.value,
+            "error_detail": (
+                "cache clear needs an explicit scope: --older-than DUR, "
+                "--host HOST, or --all (a full wipe must be deliberate)."
+            ),
+        })
+        return 1
+    if n > 1:
+        _print({
+            "ok": False,
+            "error_code": ErrorCode.CACHE_FLAG_CONFLICT.value,
+            "error_detail": "--older-than, --host, and --all are mutually exclusive.",
+        })
+        return 1
+    cache = Cache()
+    if clear_all:
+        gc = cache.clear_all()
+        scope: dict = {"all": True}
+    elif older is not None:
+        gc = cache.gc(older_than_ms=older)
+        scope = {"older_than_ms": older}
+    else:
+        gc = cache.gc(host=host)
+        scope = {"host": host}
+    _print({
+        "ok": True,
+        "scope": scope,
+        "deleted_entries": gc.deleted_entries,
+        "freed_bytes": gc.freed_bytes,
+    })
     return 0
 
 
@@ -919,6 +1037,58 @@ def _add_jobs_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_jobs)
 
 
+def _add_batch_fetch_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "batch-fetch",
+        help="concurrently fetch a known list of URLs (cache-on by default)",
+    )
+    p.add_argument("urls", nargs="*", help="URLs to fetch")
+    p.add_argument(
+        "--urls-file", dest="urls_file", default=None, metavar="FILE",
+        help="read URLs from a file (one per line; blank lines and # comments ignored)",
+    )
+    p.add_argument(
+        "--concurrency", type=int, default=8,
+        help="max in-flight fetches (default: 8)",
+    )
+    p.add_argument(
+        "--output-format", dest="output_format",
+        choices=["markdown", "html", "text", "links", "images"], default="markdown",
+        help="body format per result (default: markdown)",
+    )
+    p.add_argument("--profile", help="use a saved login profile for the fetches")
+    p.add_argument(
+        "--max-inline-tokens", dest="max_inline_tokens", type=int, default=8000,
+        help="per-result token budget; overflow goes to a dump file",
+    )
+    p.add_argument("--timeout-ms", dest="timeout_ms", type=int, default=30_000)
+    _add_cache_flags(p)
+    p.set_defaults(func=_cmd_batch_fetch)
+
+
+def _add_cache_parser(sub: argparse._SubParsersAction) -> None:
+    cache_p = sub.add_parser("cache", help="inspect and clear the local fetch cache")
+    cache_sub = cache_p.add_subparsers(dest="subcmd", required=True)
+
+    s = cache_sub.add_parser("stats", help="report cache size / hosts + legacy dumps usage")
+    s.set_defaults(func=_cmd_cache_stats)
+
+    c = cache_sub.add_parser(
+        "clear",
+        help="clear cache entries by scope (--older-than / --host / --all)",
+    )
+    c.add_argument(
+        "--older-than", dest="older_than_ms", type=_parse_duration_ms, default=None,
+        metavar="DUR", help="delete entries fetched more than DUR ago (e.g. 7d, 2h)",
+    )
+    c.add_argument("--host", default=None, help="delete entries on this host or eTLD+1")
+    c.add_argument(
+        "--all", dest="clear_all", action="store_true",
+        help="delete every entry (explicit full wipe)",
+    )
+    c.set_defaults(func=_cmd_cache_clear)
+
+
 def _add_list_backends_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "list-backends",
@@ -974,6 +1144,8 @@ def main(argv: list[str] | None = None) -> int:
     _add_crawl_resume_parser(sub)
     _add_crawl_cancel_parser(sub)
     _add_jobs_parser(sub)
+    _add_batch_fetch_parser(sub)
+    _add_cache_parser(sub)
     _add_list_backends_parser(sub)
     _add_auth_parser(sub)
 
