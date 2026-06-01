@@ -1,0 +1,104 @@
+{
+  "summary": {
+    "impersonate": "chrome120",
+    "targets": 4,
+    "with_validator": 3,
+    "any_304": 2,
+    "hit_rate": 0.667,
+    "min_hit_rate": 0.5,
+    "etag": {
+      "targets": 2,
+      "got_304": 1
+    },
+    "last_modified": {
+      "targets": 2,
+      "got_304": 2
+    },
+    "verdict": "PASS"
+  },
+  "results": [
+    {
+      "url": "https://www.cloudflare.com/robots.txt",
+      "category": "cloudflare",
+      "base_status": 200,
+      "final_url": "https://www.cloudflare.com/robots.txt",
+      "etag": "W/\"0e9fa7a0bd53c344b463d30c8eb71478\"",
+      "last_modified": null,
+      "has_validator": true,
+      "any_304": false,
+      "probes": [
+        {
+          "kind": "etag",
+          "sent": "W/\"0e9fa7a0bd53c344b463d30c8eb71478\"",
+          "status": 200,
+          "body_empty": false,
+          "is_304": false,
+          "error": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "url": "https://pages.github.com/",
+      "category": "github_pages",
+      "base_status": 200,
+      "final_url": "https://pages.github.com/",
+      "etag": "W/\"689c7eee-386e\"",
+      "last_modified": "Wed, 13 Aug 2025 12:02:54 GMT",
+      "has_validator": true,
+      "any_304": true,
+      "probes": [
+        {
+          "kind": "etag",
+          "sent": "W/\"689c7eee-386e\"",
+          "status": 304,
+          "body_empty": true,
+          "is_304": true,
+          "error": null
+        },
+        {
+          "kind": "last_modified",
+          "sent": "Wed, 13 Aug 2025 12:02:54 GMT",
+          "status": 304,
+          "body_empty": true,
+          "is_304": true,
+          "error": null
+        }
+      ],
+      "error": null
+    },
+    {
+      "url": "https://nextjs.org/",
+      "category": "vercel",
+      "base_status": 200,
+      "final_url": "https://nextjs.org/",
+      "etag": null,
+      "last_modified": null,
+      "has_validator": false,
+      "any_304": false,
+      "probes": [],
+      "error": null
+    },
+    {
+      "url": "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js",
+      "category": "static_cdn",
+      "base_status": 200,
+      "final_url": "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js",
+      "etag": null,
+      "last_modified": "Tue, 29 Aug 2023 04:36:11 GMT",
+      "has_validator": true,
+      "any_304": true,
+      "probes": [
+        {
+          "kind": "last_modified",
+          "sent": "Tue, 29 Aug 2023 04:36:11 GMT",
+          "status": 304,
+          "body_empty": true,
+          "is_304": true,
+          "error": null
+        }
+      ],
+      "error": null
+    }
+  ]
+}
