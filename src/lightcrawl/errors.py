@@ -38,6 +38,9 @@ class ErrorCode(str, Enum):
     # PR 6.2 — crawl engine. Info-level "expected branch" (design §7): the crawl
     # hit its --max-pages cap and stopped; the job still finalizes `completed`.
     CRAWL_MAX_PAGES = "CRAWL_MAX_PAGES"
+    # PR 6.3 — crawl CLI. Guard for crawl-resume against a job whose pid-file
+    # owner is still alive: you can't resume a crawl that is already running.
+    JOB_ALREADY_RUNNING = "JOB_ALREADY_RUNNING"
     UNKNOWN = "UNKNOWN"
 
 

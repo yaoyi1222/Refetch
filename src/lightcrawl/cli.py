@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import json
 import re
 import sys
 
-from . import auth, sitemap
+from . import auth, crawl, jobs, sitemap
 from .errors import ErrorCode, FetchError
+from .jobs import Job, JobStatus
 from .paths import ensure_dirs
 from .router import FetchRequest, Router, WaitForArg
 from .search.service import (
@@ -446,6 +448,173 @@ async def _run_map(args: argparse.Namespace) -> int:
     return _exit_code(payload)
 
 
+# -- crawl ------------------------------------------------------------------
+
+
+def _resolve_crawl_params(args: argparse.Namespace) -> crawl.CrawlParams:
+    """Map ``crawl`` flags to ``CrawlParams``. Cache flags reuse the shared
+    §3 resolver; unlike fetch, crawl defaults to *cache on, 1h* — when no cache
+    flag is given we fill in the 1h freshness window so re-crawls reuse fetches
+    within the hour (design §3 / §5.5 #9)."""
+    cache = _resolve_cache_kwargs(args, default_store_in_cache=True)
+    if (not cache["no_cache"] and not cache["cache_only"]
+            and cache["max_age_ms"] is None):
+        cache["max_age_ms"] = crawl._DEFAULT_MAX_AGE_MS
+    return crawl.CrawlParams(
+        seed=args.url,
+        max_depth=args.max_depth,
+        max_pages=args.max_pages,
+        include_paths=tuple(args.include_paths or ()),
+        exclude_paths=tuple(args.exclude_paths or ()),
+        allow_subdomains=args.allow_subdomains,
+        crawl_entire_domain=args.crawl_entire_domain,
+        ignore_robots=args.ignore_robots,
+        ignore_query_parameters=args.ignore_query_parameters,
+        concurrency=args.concurrency,
+        user_agent=args.user_agent,
+        output_format=args.output_format,
+        profile=args.profile,
+        **cache,
+    )
+
+
+def _params_from_job(job: Job) -> crawl.CrawlParams:
+    """Rebuild ``CrawlParams`` from a job's persisted params dict (for resume).
+    Tolerant of schema drift: unknown keys are dropped, missing keys fall back
+    to the dataclass defaults. JSON turns the path tuples into lists, which the
+    filter helpers accept unchanged."""
+    valid = {f.name for f in dataclasses.fields(crawl.CrawlParams)}
+    return crawl.CrawlParams(**{k: v for k, v in (job.params or {}).items() if k in valid})
+
+
+def _crawl_payload(data: dict) -> dict:
+    """Build the surfaced JSON from a job summary dict. Always ``ok: true`` —
+    completed / interrupted / cancelled are all valid terminal states the engine
+    reached without crashing; the ``status`` field carries the nuance. Hitting
+    ``--max-pages`` is surfaced as the info-level CRAWL_MAX_PAGES branch."""
+    progress = data.get("progress") or {}
+    payload: dict = {
+        "ok": True,
+        "job_id": data.get("job_id"),
+        "status": data.get("status"),
+        "progress": progress,
+    }
+    if data.get("errors_tail"):
+        payload["errors_tail"] = data["errors_tail"]
+    params = data.get("params") or {}
+    max_pages = params.get("max_pages")
+    if (data.get("status") == JobStatus.COMPLETED.value and max_pages
+            and progress.get("pages_fetched", 0) >= max_pages):
+        payload["error_code"] = ErrorCode.CRAWL_MAX_PAGES.value
+        payload["note"] = (
+            f"hit --max-pages cap ({max_pages}); "
+            f"{progress.get('pages_pending', 0)} URL(s) left unfetched. "
+            f"Raise --max-pages or resume to continue."
+        )
+    return payload
+
+
+async def _drive_crawl(params: crawl.CrawlParams, job: Job) -> int:
+    """Run a foreground crawl to its terminal state, then print the summary.
+    Signals are wired so Ctrl-C / SIGTERM finalize the job ``interrupted``
+    (resumable) rather than killing it mid-flush."""
+    router = Router()
+    loop = asyncio.get_running_loop()
+    crawl.install_signal_handlers(loop, job)
+    try:
+        await crawl.run_crawl(params, job, router)
+    finally:
+        await router.close()
+    payload = _crawl_payload(jobs.read_status(job.job_id))
+    _print(payload)
+    return _exit_code(payload)
+
+
+def _cmd_crawl(args: argparse.Namespace) -> int:
+    err = _validate_cache_flags(args)
+    if err is not None:
+        _print(err)
+        return 1
+    return _safe_run(_run_crawl(args))
+
+
+async def _run_crawl(args: argparse.Namespace) -> int:
+    params = _resolve_crawl_params(args)
+    job = Job.create("crawl", dataclasses.asdict(params))
+    return await _drive_crawl(params, job)
+
+
+def _cmd_crawl_status(args: argparse.Namespace) -> int:
+    return _safe_run(_run_crawl_status(args))
+
+
+async def _run_crawl_status(args: argparse.Namespace) -> int:
+    data = jobs.read_status(args.job_id)  # raises JOB_NOT_FOUND
+    payload = _crawl_payload(data)
+    payload["type"] = data.get("type")
+    payload["started_at"] = data.get("started_at")
+    payload["updated_at"] = data.get("updated_at")
+    _print(payload)
+    return 0
+
+
+def _cmd_crawl_resume(args: argparse.Namespace) -> int:
+    return _safe_run(_run_crawl_resume(args))
+
+
+async def _run_crawl_resume(args: argparse.Namespace) -> int:
+    # Guard against resuming a live crawl. reconcile (run in main) flips
+    # dead-owner 'running' jobs to 'interrupted'; if a job is still 'running'
+    # here its owner is genuinely alive, so resume would double-run it.
+    data = jobs.read_status(args.job_id)  # raises JOB_NOT_FOUND
+    if data.get("status") == JobStatus.RUNNING.value:
+        pid_path = jobs.paths.JOBS / f"{args.job_id}.pid"
+        if jobs.is_owner_alive(pid_path):
+            raise FetchError(
+                ErrorCode.JOB_ALREADY_RUNNING,
+                f"{args.job_id}: a crawl is already running for this job",
+            )
+    job = Job.resume(args.job_id)  # raises JOB_NOT_RESUMABLE if not interrupted
+    return await _drive_crawl(_params_from_job(job), job)
+
+
+def _cmd_crawl_cancel(args: argparse.Namespace) -> int:
+    return _safe_run(_run_crawl_cancel(args))
+
+
+async def _run_crawl_cancel(args: argparse.Namespace) -> int:
+    job = Job.load(args.job_id)  # raises JOB_NOT_FOUND
+    if job.status in (JobStatus.COMPLETED, JobStatus.CANCELLED):
+        _print({
+            "ok": True, "job_id": job.job_id, "status": job.status.value,
+            "note": "job already in a terminal state; nothing to cancel",
+        })
+        return 0
+    # Request: the .cancel file is the signal a running crawl polls via
+    # should_stop(); a present .cancel also wins in finalize() -> CANCELLED.
+    job.cancel_path.write_text("", encoding="utf-8")
+    if jobs.is_owner_alive(job.pid_path):
+        # Running elsewhere — that process will see .cancel and finalize.
+        _print({
+            "ok": True, "job_id": job.job_id, "status": "cancelling",
+            "note": "cancel requested; the running crawl will stop and finalize",
+        })
+        return 0
+    # No live owner (interrupted / orphaned): finalize it cancelled now.
+    job.finalize()
+    _print({"ok": True, "job_id": job.job_id, "status": job.status.value})
+    return 0
+
+
+def _cmd_jobs(args: argparse.Namespace) -> int:
+    return _safe_run(_run_jobs(args))
+
+
+async def _run_jobs(_: argparse.Namespace) -> int:
+    _print({"ok": True, "jobs": jobs.list_jobs()})
+    return 0
+
+
 def _cmd_list_backends(_: argparse.Namespace) -> int:
     return _safe_run(_run_list_backends())
 
@@ -663,6 +832,93 @@ def _add_map_parser(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_map)
 
 
+def _add_crawl_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "crawl",
+        help="BFS-crawl a domain from a seed URL (foreground; Ctrl-C is resumable)",
+    )
+    p.add_argument("url", help="seed URL; its scheme+host define the crawl domain")
+    p.add_argument(
+        "--max-depth", dest="max_depth", type=int, default=3,
+        help="max link depth from the seed (seed is depth 0; default: 3)",
+    )
+    p.add_argument(
+        "--max-pages", dest="max_pages", type=int, default=100,
+        help="soft cap on fetched pages; stops at >= this (default: 100)",
+    )
+    p.add_argument(
+        "--include-path", dest="include_paths", action="append", default=[],
+        metavar="REGEX",
+        help="only follow discovered links whose path+query matches (repeatable)",
+    )
+    p.add_argument(
+        "--exclude-path", dest="exclude_paths", action="append", default=[],
+        metavar="REGEX",
+        help="skip discovered links whose path+query matches; wins over include (repeatable)",
+    )
+    p.add_argument(
+        "--allow-subdomains", dest="allow_subdomains", action="store_true",
+        help="follow links to any subdomain of the seed's eTLD+1, not just the exact host",
+    )
+    p.add_argument(
+        "--crawl-entire-domain", dest="crawl_entire_domain", action="store_true",
+        help="treat the whole eTLD+1 as in-scope (alias of --allow-subdomains for the domain boundary)",
+    )
+    p.add_argument(
+        "--ignore-robots", dest="ignore_robots", action="store_true",
+        help="do not honor robots.txt (default: honor it, skipping disallowed URLs)",
+    )
+    p.add_argument(
+        "--ignore-query-parameters", dest="ignore_query_parameters", action="store_true",
+        help="canonicalize URLs without their query string for dedup",
+    )
+    p.add_argument(
+        "--concurrency", type=int, default=4,
+        help="max in-flight fetches (default: 4)",
+    )
+    p.add_argument(
+        "--user-agent", dest="user_agent", default="*",
+        help="robots user-agent group to match (default: *)",
+    )
+    p.add_argument(
+        "--output-format", dest="output_format",
+        choices=["markdown", "html", "text"], default="markdown",
+        help="body format stored per page (default: markdown)",
+    )
+    p.add_argument("--profile", help="use a saved login profile for fetches")
+    _add_cache_flags(p)
+    p.set_defaults(func=_cmd_crawl)
+
+
+def _add_crawl_status_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("crawl-status", help="show a crawl job's status + progress")
+    p.add_argument("job_id")
+    p.set_defaults(func=_cmd_crawl_status)
+
+
+def _add_crawl_resume_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "crawl-resume",
+        help="resume an interrupted crawl job (re-enqueues claimed-but-unfetched URLs)",
+    )
+    p.add_argument("job_id")
+    p.set_defaults(func=_cmd_crawl_resume)
+
+
+def _add_crawl_cancel_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "crawl-cancel",
+        help="cancel a crawl job (signals a running job; finalizes an idle one)",
+    )
+    p.add_argument("job_id")
+    p.set_defaults(func=_cmd_crawl_cancel)
+
+
+def _add_jobs_parser(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("jobs", help="list all crawl jobs, newest first")
+    p.set_defaults(func=_cmd_jobs)
+
+
 def _add_list_backends_parser(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "list-backends",
@@ -696,6 +952,9 @@ def _add_auth_parser(sub: argparse._SubParsersAction) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     ensure_dirs()
+    # Startup self-heal: any job left 'running' by a crashed/killed process
+    # (dead pid owner) is flipped to 'interrupted' so crawl-resume can reopen it.
+    jobs.reconcile_jobs()
     parser = argparse.ArgumentParser(
         prog="lightcrawl",
         description=(
@@ -710,6 +969,11 @@ def main(argv: list[str] | None = None) -> int:
     _add_search_parser(sub)
     _add_search_and_read_parser(sub)
     _add_map_parser(sub)
+    _add_crawl_parser(sub)
+    _add_crawl_status_parser(sub)
+    _add_crawl_resume_parser(sub)
+    _add_crawl_cancel_parser(sub)
+    _add_jobs_parser(sub)
     _add_list_backends_parser(sub)
     _add_auth_parser(sub)
 
