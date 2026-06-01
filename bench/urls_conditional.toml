@@ -1,0 +1,26 @@
+# R1 conditional-request probe targets (v0.3 PR 3 gate).
+# Four representative static-asset origins per docs/v0.3/design.md §11 R1:
+# a Cloudflare-fronted origin, GitHub Pages, a Vercel deployment, and an
+# immutable CDN asset (the "static S3"-style best case). These are validated
+# for ETag / Last-Modified support, not content — edit freely; the probe skips
+# any target that doesn't expose a validator.
+
+[[urls]]
+url = "https://www.cloudflare.com/robots.txt"
+category = "cloudflare"
+note = "small static file behind Cloudflare"
+
+[[urls]]
+url = "https://pages.github.com/"
+category = "github_pages"
+note = "GitHub Pages index (Fastly-fronted)"
+
+[[urls]]
+url = "https://nextjs.org/"
+category = "vercel"
+note = "Vercel-hosted site"
+
+[[urls]]
+url = "https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js"
+category = "static_cdn"
+note = "immutable CDN asset — strong ETag + Last-Modified (best case)"
