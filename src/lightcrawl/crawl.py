@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import signal
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -114,6 +115,24 @@ async def fetch_one(item: FrontierItem, params: CrawlParams, router: Router,
                       "error_code": "UNKNOWN", "error_detail": str(e)}
     result["depth"] = item.depth
     return result
+
+
+def install_signal_handlers(loop: asyncio.AbstractEventLoop, job: Job) -> None:
+    """Wire SIGINT/SIGTERM on ``loop`` to a graceful shutdown (PR 6.3).
+
+    The handler flags the job ``interrupted`` (it does not raise): the BFS loop
+    polls ``job.should_stop()`` and exits at the next turn, then ``finalize()``
+    resolves the job to ``interrupted`` — a state ``crawl-resume`` can reopen.
+    No-op where the loop can't install signal handlers (Windows ProactorLoop,
+    non-main thread); we degrade to default SIGINT behavior rather than fail."""
+    def _handler() -> None:
+        job.request_shutdown("interrupted")
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _handler)
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
 
 
 async def run_crawl(params: CrawlParams, job: Job, router: Router) -> None:

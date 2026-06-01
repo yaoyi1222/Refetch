@@ -131,6 +131,48 @@ def reconcile_jobs(jobs_dir: Path | None = None) -> list[str]:
     return flipped
 
 
+def read_status(job_id: str, *, jobs_dir: Path | None = None) -> dict:
+    """Read only the ``<id>.json`` summary — no visited/frontier side files.
+
+    The cheap read behind ``crawl-status``: status + progress + errors_tail +
+    params are all in the JSON, so a status check on a 50k-page crawl doesn't
+    have to slurp megabytes of ``visited.txt``. Absent / corrupt → JOB_NOT_FOUND
+    (same contract as ``Job.load``)."""
+    jobs_dir = jobs_dir or paths.JOBS
+    json_path = jobs_dir / f"{job_id}.json"
+    try:
+        return json.loads(json_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        raise FetchError(ErrorCode.JOB_NOT_FOUND, f"{job_id}: {e}") from e
+
+
+def list_jobs(jobs_dir: Path | None = None) -> list[dict]:
+    """Summaries of every job in ``jobs_dir``, newest first. JSON-only (no side
+    files); files with no ``job_id`` or unreadable JSON are skipped, never
+    fatal. Backs the ``jobs`` subcommand."""
+    jobs_dir = jobs_dir or paths.JOBS
+    if not jobs_dir.exists():
+        return []
+    out: list[dict] = []
+    for json_path in jobs_dir.glob("*.json"):
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not data.get("job_id"):
+            continue
+        out.append({
+            "job_id": data.get("job_id"),
+            "type": data.get("type"),
+            "status": data.get("status"),
+            "progress": data.get("progress", {}),
+            "started_at": data.get("started_at"),
+            "updated_at": data.get("updated_at"),
+        })
+    out.sort(key=lambda d: d.get("started_at") or 0, reverse=True)
+    return out
+
+
 class Job:
     def __init__(self, job_id: str, type: str, params: dict, *, jobs_dir: Path):
         self.job_id = job_id
