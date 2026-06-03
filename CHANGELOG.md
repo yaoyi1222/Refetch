@@ -68,7 +68,8 @@ with map / crawl / cache as the headline features. See
 - **Crawl** (`jobs.py` + `crawl.py` + `robots.py`) — BFS multi-page crawl with
   an append-only on-disk job store, crash-safe resume, and cancellation:
   `crawl`, `crawl-status`, `crawl-resume`, `crawl-cancel`, `jobs`. Per-host
-  robots.txt allow/disallow enforcement; `--include`/`--exclude` on raw URLs;
+  robots.txt allow/disallow enforcement; `--include-path`/`--exclude-path`
+  (regex, matched on path+query);
   `--no-cache` override. Liveness via psutil PID + create_time double-check;
   atomic writes via `os.replace` (Windows-safe).
 - **`lightcrawl batch-fetch`** (`batch.py`) — fetch many URLs in parallel

@@ -67,10 +67,11 @@ def _ratio(num: int, den: int) -> float:
 def run(urls: list[str]) -> dict:
     total = len(urls)
 
-    # Pass 1 — warm the cache (entries are written under --max-age).
+    # Pass 1 — warm the cache (entries are written under --max-age). On a cold
+    # cache these are live fetches that expose validators in `headers`; on an
+    # already-warm cache they come back as header-less cache hits.
     warm = _batch(urls, "1h")
     warm_hits = sum(1 for r in warm if r.get("cache_hit"))
-    with_validator = sum(1 for r in warm if r.get("headers"))
 
     # Tier (a) — immediate re-fetch, entries are fresh for a 1h window.
     tier_a = _batch(urls, "1h")
@@ -80,6 +81,17 @@ def run(urls: list[str]) -> dict:
     # issues a conditional GET; a 304 shows up as revalidated=True.
     tier_b = _batch(urls, "1ms")
     b_reval = sum(1 for r in tier_b if r.get("revalidated"))
+
+    # A URL "carries a validator" if the warm pass fetched it live and exposed
+    # ETag/Last-Modified in `headers`, OR if tier (b) revalidated it (a 304
+    # proves a stored validator). Counting only the warm pass would collapse
+    # this to 0 on an already-warm cache — where every warm response is a
+    # header-less hit — and falsely fail tier (b). Results are URL-ordered, so
+    # the per-index zip lines warm and tier_b up.
+    with_validator = sum(
+        1 for w, b in zip(warm, tier_b)
+        if w.get("headers") or b.get("revalidated")
+    )
 
     return {
         "total_urls": total,

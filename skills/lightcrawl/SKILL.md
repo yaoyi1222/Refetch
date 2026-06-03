@@ -93,7 +93,7 @@ All commands print one JSON object on stdout. Useful patterns from the Bash tool
 | `--exclude-tag <TAG>` | Remove these tags before extraction (repeatable). Stacked on top of built-in script/style strip. |
 | `--header KEY=VAL` | Extra HTTP request header (repeatable). Caller wins on collision with impersonate defaults. |
 | `--mobile` | Emulate iOS Safari on both layers (UA + TLS fingerprint + viewport). |
-| `--remove-base64-images` | Drop data: URI images but keep real images in markdown output. |
+| `--no-remove-base64-images` | Keep inline `data:` URI images. v0.3 strips them by default (real images survive); pass this to restore the v0.2 behavior. |
 | `--max-inline-tokens` | Increase for deep-dive reads; decrease to save tokens on partial reads. |
 | `--actions '[...]'` | Execute browser actions after page load: click, write, press, wait, scroll, screenshot. Forces L2. JSON or `@file.json`. |
 | `--max-age <dur>` | Enables the cache: serve the stored body if fresher than `<dur>` (`30m`, `1h`, `24h`), otherwise fetch live **and store** the result (and, if a validator is present, revalidate via `304`). |
