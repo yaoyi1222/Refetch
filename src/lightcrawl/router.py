@@ -319,6 +319,34 @@ class Router:
         max_age = req.max_age_ms if req.max_age_ms is not None else _MAX_AGE_SENTINEL
         return self._get_cache().lookup(req.url, profile=req.profile, max_age_ms=max_age)
 
+    def _revalidation(self, req: FetchRequest) -> tuple[CacheHit | None, dict[str, str]]:
+        """PR 3 — conditional-request setup for the L1 path.
+
+        Reached only after ``_cache_lookup`` missed (stale or no max_age).
+        When cache is *opted in* (a cache flag is present — the bare-fetch
+        default is excluded so v0.2 behaviour is untouched) and a stored
+        entry exposes an ETag / Last-Modified, return that entry plus the
+        conditional headers to send. ``cache_only`` never reaches here (it
+        either hit or already returned ``CACHE_MISS`` in ``fetch``).
+        """
+        if req.no_cache or req.cache_only:
+            return None, {}
+        if not req.store_in_cache and req.max_age_ms is None:
+            return None, {}
+        hit = self._get_cache().lookup_for_revalidation(req.url, profile=req.profile)
+        if hit is None:
+            return None, {}
+        cond: dict[str, str] = {}
+        etag = hit.headers.get("etag")
+        last_modified = hit.headers.get("last-modified")
+        if etag:
+            cond["If-None-Match"] = etag
+        if last_modified:
+            cond["If-Modified-Since"] = last_modified
+        if not cond:
+            return None, {}
+        return hit, cond
+
     def _cache_store_if_requested(self, req: FetchRequest, response: dict) -> dict:
         """Write to cache after a successful fetch if the request asked
         for it. Returns the response unchanged so call sites can chain.
@@ -331,6 +359,11 @@ class Router:
         if req.no_cache or not req.store_in_cache:
             return response
         if not response.get("ok"):
+            return response
+        # Never re-store a cache-sourced response (e.g. a 304-revalidated
+        # body): it carries no top-level ``headers``, so storing it would
+        # blank the entry's etag / last_modified columns.
+        if response.get("cache_hit"):
             return response
         try:
             self._get_cache().store(req.url, profile=req.profile, response=response)
@@ -424,11 +457,16 @@ class Router:
 
         # Auto: try L1, escalate to L2 on signals
         l1_timeout = min(8.0, req.timeout_ms / 1000.0)
+        # PR 3 — conditional request: if a stale-but-validatable entry exists,
+        # send If-None-Match / If-Modified-Since (L1 only). Caller headers win
+        # on collision, matching ``fetch_http.fetch``'s merge order.
+        reval_hit, cond_headers = self._revalidation(req)
+        merged_headers = {**cond_headers, **(req.headers or {})} or None
         try:
             r = await _l1_with_one_retry(
                 req.url,
                 l1_timeout,
-                headers=req.headers or None,
+                headers=merged_headers,
                 impersonate=fetch_http.MOBILE_IMPERSONATE if req.mobile else fetch_http.DEFAULT_IMPERSONATE,
             )
         except asyncio.TimeoutError:
@@ -443,6 +481,34 @@ class Router:
                     req, await self._fetch_browser_only(req, attempts, storage_state=None),
                 )
             return _failure(req.url, e.code, e.detail, attempts)
+
+        # 304 Not Modified: the cached body is confirmed current. Refresh the
+        # entry's freshness and serve the cached copy — no re-extraction, no
+        # L2 escalation. (Defensive: only when we actually hold the entry.)
+        if r.status_code == 304 and reval_hit is not None:
+            # _success_from_cache records the Attempt("http", "304") itself.
+            try:
+                revalidated_at = self._get_cache().mark_revalidated(req.url, profile=req.profile)
+            except (OSError, sqlite3.Error):
+                revalidated_at = None
+            return _success_from_cache(
+                req, reval_hit, attempts,
+                revalidated=True, revalidated_at_ms=revalidated_at,
+            )
+
+        # 304 with nothing in hand to serve. Our own validators are sent only
+        # when we hold the entry, so this means a caller-supplied conditional
+        # header (``--header If-None-Match=...``) drew a 304 we can't satisfy.
+        # Surface it rather than fall through — the empty body would otherwise
+        # trip ``_should_escalate_to_browser`` into a pointless L2 launch.
+        if r.status_code == 304:
+            attempts.append(Attempt("http", "304"))
+            return _failure(
+                req.url, ErrorCode.HTTP_ERROR,
+                "304 Not Modified but no cached entry to serve "
+                "(conditional header sent without a stored validator)",
+                attempts, status_code=304,
+            )
 
         attempts.append(Attempt("http", str(r.status_code)))
 
@@ -472,11 +538,14 @@ class Router:
 
     async def _fetch_http_only(self, req: FetchRequest, attempts: list[Attempt]) -> dict:
         l1_timeout = min(8.0, req.timeout_ms / 1000.0)
+        # PR 3 — same conditional-request path as the auto branch (L1 only).
+        reval_hit, cond_headers = self._revalidation(req)
+        merged_headers = {**cond_headers, **(req.headers or {})} or None
         try:
             r = await _l1_with_one_retry(
                 req.url,
                 l1_timeout,
-                headers=req.headers or None,
+                headers=merged_headers,
                 impersonate=fetch_http.MOBILE_IMPERSONATE if req.mobile else fetch_http.DEFAULT_IMPERSONATE,
             )
         except asyncio.TimeoutError:
@@ -485,6 +554,25 @@ class Router:
         except FetchError as e:
             attempts.append(Attempt("http", e.code.value.lower()))
             return _failure(req.url, e.code, e.detail, attempts)
+        if r.status_code == 304 and reval_hit is not None:
+            try:
+                revalidated_at = self._get_cache().mark_revalidated(req.url, profile=req.profile)
+            except (OSError, sqlite3.Error):
+                revalidated_at = None
+            return _success_from_cache(
+                req, reval_hit, attempts,
+                revalidated=True, revalidated_at_ms=revalidated_at,
+            )
+        # Orphan 304 (caller-supplied conditional header, nothing cached to
+        # serve): surface it instead of returning an empty-bodied success.
+        if r.status_code == 304:
+            attempts.append(Attempt("http", "304"))
+            return _failure(
+                req.url, ErrorCode.HTTP_ERROR,
+                "304 Not Modified but no cached entry to serve "
+                "(conditional header sent without a stored validator)",
+                attempts, status_code=304,
+            )
         attempts.append(Attempt("http", str(r.status_code)))
         extracted = content_mod.html_to_markdown(
             r.text,
@@ -690,6 +778,7 @@ class Router:
 
 def _success_from_cache(
     req: FetchRequest, hit: CacheHit, attempts: list[Attempt],
+    *, revalidated: bool = False, revalidated_at_ms: int | None = None,
 ) -> dict:
     """Build the same response envelope as a fresh fetch from a CacheHit.
 
@@ -700,15 +789,26 @@ def _success_from_cache(
     fresh content. Attempts list is updated so the response carries the
     same provenance shape as the live paths.
     """
-    cache_attempt = Attempt("cache", "hit")
+    # A 304 revalidation reuses the body but the entry was just refreshed,
+    # so its effective age is 0; flag it so callers can tell a 304-confirmed
+    # hit from a plain age-based one (design §5.2 / acceptance §10.2b).
+    cache_attempt = Attempt("http", "304") if revalidated else Attempt("cache", "hit")
     result: dict = {
         "ok": True,
         "url": req.url,
         "final_url": hit.final_url or req.url,
         "strategy_used": "cache",
         "cache_hit": True,
-        "cache_age_ms": hit.age_ms,
-        "cache_fetched_at_ms": hit.fetched_at_ms,
+        "revalidated": revalidated,
+        "cache_age_ms": 0 if revalidated else hit.age_ms,
+        # On a 304 ``mark_revalidated`` reset ``fetched_at`` to now, so report
+        # that refreshed value — emitting the stale pre-revalidation stamp
+        # would contradict ``cache_age_ms == 0``. (Falls back to the old stamp
+        # only if the freshness write was skipped.)
+        "cache_fetched_at_ms": (
+            revalidated_at_ms if revalidated and revalidated_at_ms is not None
+            else hit.fetched_at_ms
+        ),
         "fetched_at": _now_iso(),
         "title": hit.title,
         "content": hit.markdown,
@@ -736,7 +836,20 @@ def _success_from_http(
 ) -> dict:
     body = _format_body(req.output_format, extracted, r.text)
     inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
-    return {
+    # PR 3 — surface the response validators top-level so ``Cache.store``
+    # persists them (it reads ``response["headers"]``) and the next fetch can
+    # send a conditional GET. Lower-cased keys match what ``store`` reads.
+    # Only emit ``headers`` when a validator is actually present: a
+    # no-validator response stays byte-identical to the v0.2 default shape
+    # (a hard invariant enforced by test_pr1a/test_pr1b/test_pr2). Pages
+    # that expose ETag / Last-Modified carry the key so ``Cache.store``
+    # persists them for the next conditional request.
+    headers: dict[str, str] = {}
+    if r.etag:
+        headers["etag"] = r.etag
+    if r.last_modified:
+        headers["last-modified"] = r.last_modified
+    result = {
         "ok": True,
         "url": req.url,
         "final_url": r.final_url,
@@ -759,6 +872,9 @@ def _success_from_http(
         "attempts": [a.to_dict() for a in attempts],
         "headings": [{"level": h.level, "text": h.text, "line": h.line} for h in extracted.headings],
     }
+    if headers:
+        result["headers"] = headers
+    return result
 
 
 def _success_from_browser(

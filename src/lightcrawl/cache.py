@@ -278,6 +278,28 @@ class Cache:
     def touch(self, url: str, *, profile: str | None) -> None:
         self._touch_db(url, profile=profile, now=time_ms())
 
+    def mark_revalidated(self, url: str, *, profile: str | None) -> int:
+        """304 path (PR 3): the cached body is confirmed current as of now.
+        Refresh BOTH ``accessed_at`` (LRU) and ``fetched_at`` (age) so the
+        entry counts as fresh for subsequent ``max_age`` lookups. ``touch``
+        deliberately bumps only ``accessed_at``; revalidation needs the
+        stronger freshness reset, hence the separate method. Returns the
+        timestamp written so the caller can report a ``cache_fetched_at_ms``
+        that agrees with ``cache_age_ms == 0``."""
+        canonical = canonicalize_url(url)
+        key = url_hash(canonical, profile=profile)
+        now = time_ms()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE entries SET accessed_at = ?, fetched_at = ? WHERE url_hash = ?",
+                (now, now, key),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return now
+
     def _touch_db(self, url: str, *, profile: str | None, now: int) -> None:
         canonical = canonicalize_url(url)
         key = url_hash(canonical, profile=profile)
