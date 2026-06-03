@@ -91,7 +91,10 @@ async def test_headers_default_empty_does_not_pass_dict_to_l1(router):
 
     def fake_fetch(url, *, timeout, headers=None, **_kwargs):
         seen["headers"] = headers
-        return _ok("<html><body><article><p>body body body.</p></article></body></html>")
+        # Use _LONG_HTML (≥200 chars) so the router stays on L1: a tiny body
+        # trips _should_escalate_to_browser's "len(html) < 200" heuristic and
+        # falls through to the real Playwright path, which has no browser in CI.
+        return _ok(_LONG_HTML)
 
     with patch("lightcrawl.url_safety.socket.gethostbyname", return_value="93.184.216.34"), \
          patch("lightcrawl.fetch_http.fetch", side_effect=fake_fetch):
