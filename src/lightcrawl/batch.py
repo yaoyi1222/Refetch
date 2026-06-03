@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+from .errors import ErrorCode
 from .router import FetchRequest, Router
 
 _DEFAULT_MAX_AGE_MS = 3_600_000  # 1h — batch's cache-on default (design §3)
@@ -42,7 +43,7 @@ def _exc_to_failure(url: str, exc: BaseException) -> dict:
     so a single crash can't sink the whole batch (mirrors search/service.py)."""
     return {
         "ok": False, "url": url,
-        "error_code": "UNKNOWN", "error_detail": f"{type(exc).__name__}: {exc}",
+        "error_code": ErrorCode.UNKNOWN.value, "error_detail": f"{type(exc).__name__}: {exc}",
     }
 
 
