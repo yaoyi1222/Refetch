@@ -25,6 +25,14 @@ with map / crawl / cache as the headline features. See
 
 ### Fixed
 
+- **Declared `cssselect` as a runtime dependency.** `content.py`'s selector
+  path (`--selector`, `_suggested_selectors`) calls lxml's `.cssselect()`,
+  which requires the `cssselect` package. It was never in `dependencies` and
+  only worked because the `[bench]` extra pulls it in transitively
+  (`readability-lxml` → `cssselect`). A plain `pip install lightcrawl` (or
+  `.[dev]`) therefore got a silently-degraded selector feature — `.cssselect()`
+  raised, was swallowed by a defensive `try/except`, and extraction fell back
+  to `<body>`. Surfaced by the new `[dev]`-only CI matrix.
 - CLI now honors the new `remove_base64_images=True` default. The v0.3
   PR 1 initial commit (`bcf0ec2`) flipped the `FetchRequest` dataclass
   default but `cli.py` was still passing `args.remove_base64_images`
