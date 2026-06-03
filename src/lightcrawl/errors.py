@@ -41,6 +41,10 @@ class ErrorCode(str, Enum):
     # PR 6.3 — crawl CLI. Guard for crawl-resume against a job whose pid-file
     # owner is still alive: you can't resume a crawl that is already running.
     JOB_ALREADY_RUNNING = "JOB_ALREADY_RUNNING"
+    # PR 7 — cache clear. A bare `cache clear` with no scope is refused (a full
+    # wipe must be explicit, --all): destructive + the one-JSON CLI can't
+    # interactively confirm. CACHE_FLAG_CONFLICT covers >1 mutually-exclusive scope.
+    CACHE_CLEAR_NO_SCOPE = "CACHE_CLEAR_NO_SCOPE"
     UNKNOWN = "UNKNOWN"
 
 

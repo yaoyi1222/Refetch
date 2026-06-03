@@ -340,6 +340,18 @@ class Cache:
             conn.close()
         return GCStats(deleted_entries=deleted, freed_bytes=freed)
 
+    def clear_all(self) -> GCStats:
+        """Delete every entry and its side files — the explicit full-wipe
+        behind ``cache clear --all``. Distinct from ``gc()``'s scoped modes:
+        a full wipe is deliberate, never a default. Reuses ``_delete_where``
+        with an always-true predicate so side-file cleanup stays in one place."""
+        conn = self._connect()
+        try:
+            deleted, freed = self._delete_where(conn, "1=1", ())
+        finally:
+            conn.close()
+        return GCStats(deleted_entries=deleted, freed_bytes=freed)
+
     def _delete_where(
         self, conn: sqlite3.Connection, where: str, params: tuple,
     ) -> tuple[int, int]:
