@@ -7,7 +7,7 @@ import json
 import re
 import sys
 
-from . import auth, batch, crawl, jobs, sitemap
+from . import __version__, auth, batch, crawl, jobs, sitemap
 from .cache import Cache
 from .errors import ErrorCode, FetchError
 from .jobs import Job, JobStatus
@@ -1132,6 +1132,11 @@ def main(argv: list[str] | None = None) -> int:
             "profiles. Every command prints a JSON object on stdout; exit "
             "code 0 means ok=true, 1 means ok=false."
         ),
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"lightcrawl {__version__}",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 

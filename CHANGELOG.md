@@ -4,11 +4,11 @@ All notable changes to lightcrawl are documented here. Format loosely
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); dates are
 ISO 8601.
 
-## [Unreleased] — v0.3 (in progress)
+## [0.3.0] — 2026-06-03
 
 v0.3 upgrades lightcrawl from "enhanced WebFetch" to "local firecrawl"
-with map / crawl / cache as the headline features. See `v0.3-design.md`
-for the full plan. This entry is updated PR-by-PR.
+with map / crawl / cache as the headline features. See
+`docs/v0.3/design.md` for the full plan.
 
 ### Breaking changes
 
@@ -37,12 +37,46 @@ for the full plan. This entry is updated PR-by-PR.
 
 ### Added
 
-- `src/lightcrawl/canonical.py` — pure-function URL canonicalization and
-  `url_hash(canonical_url, profile=...)` used as the single source of
-  truth for cache keys and crawl dedup. The `profile` dimension is a
-  security boundary: an authed fetch of a URL with `profile=twitter`
-  produces a different hash than an unauthed fetch of the same URL,
-  preventing cross-profile cache replay.
+- **URL canonicalization** (`canonical.py`) — pure-function canonicalization
+  and `url_hash(canonical_url, profile=...)`, the single source of truth for
+  cache keys and crawl dedup. The `profile` dimension is a security boundary:
+  an authed fetch with `profile=twitter` hashes differently than an unauthed
+  fetch of the same URL, preventing cross-profile cache replay.
+- **Local fetch cache** (`cache.py` + Router cache aspect) — SQLite-WAL index
+  + atomic body store under `~/.lightcrawl/cache/`. New `FetchRequest` fields
+  and CLI flags: `--max-age <dur>` (serve the stored body if fresher, else
+  fetch live and store), `--no-store` (read but don't write), `--cache-only`
+  (offline, hit-or-`CACHE_MISS`), `--no-cache` (bypass). Cache key includes the
+  `profile` dimension; the bare `fetch` default is unchanged (byte-identical to
+  v0.2 — no cache read or write unless a flag opts in).
+- **Conditional requests** (PR 3) — on a stale cache-on fetch carrying an
+  `ETag` / `Last-Modified`, the L1 (curl_cffi, impersonated) path sends a
+  conditional GET; a `304 Not Modified` reuses the cached body and refreshes
+  its freshness (`revalidated: true` in the envelope). L1 only; gated by the
+  R1 probe (304 hit-rate 0.67 on `chrome120`).
+- **`lightcrawl map <url>`** (`sitemap.py`) — in-domain URL discovery,
+  sitemap-first (robots.txt `Sitemap:` → `/sitemap.xml` → `/sitemap_index.xml`),
+  falling back to homepage `<a>` links. Emits `{source, count, urls, notes?}`.
+- **Crawl** (`jobs.py` + `crawl.py` + `robots.py`) — BFS multi-page crawl with
+  an append-only on-disk job store, crash-safe resume, and cancellation:
+  `crawl`, `crawl-status`, `crawl-resume`, `crawl-cancel`, `jobs`. Per-host
+  robots.txt allow/disallow enforcement; `--include`/`--exclude` on raw URLs;
+  `--no-cache` override. Liveness via psutil PID + create_time double-check;
+  atomic writes via `os.replace` (Windows-safe).
+- **`lightcrawl batch-fetch`** (`batch.py`) — fetch many URLs in parallel
+  through the shared Router/cache, one JSON object aggregating per-URL results;
+  one failure never loses the others.
+- **`lightcrawl cache stats` / `cache clear`** — report cache size / host
+  breakdown + legacy dumps usage; clear all or by host.
+- **`lightcrawl --version`** — prints `lightcrawl 0.3.0`.
+
+### CI / packaging
+
+- `.github/workflows/ci.yml` — ruff + the full offline suite on
+  `ubuntu-latest`, plus the cross-platform-sensitive modules
+  (`canonical`/`cache`/`jobs`/`sitemap`/`batch_fetch`) on `windows-latest`.
+- Version bumped to `0.3.0` (`pyproject.toml` + `lightcrawl.__version__`),
+  with `tests/test_version.py` pinning the two together.
 
 ## [0.2.0] — 2026-05-18
 

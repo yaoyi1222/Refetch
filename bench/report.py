@@ -41,7 +41,7 @@ def _outcome_for(row: dict, mode: str) -> dict | None:
 def render(data: dict) -> str:
     rows = data["rows"]
     out: list[str] = []
-    out.append(f"# WebFetch token-consumption benchmark\n")
+    out.append("# WebFetch token-consumption benchmark\n")
     out.append(f"_Token counter: `{data['token_strategy']}`_\n")
     out.append(
         "Two columns matter: **tokens returned to the model** (what eats your "

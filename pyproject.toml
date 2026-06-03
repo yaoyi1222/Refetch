@@ -1,6 +1,6 @@
 [project]
 name = "lightcrawl"
-version = "0.2.0"
+version = "0.3.0"
 description = "Replaces Claude Code's built-in WebFetch and WebSearch with a local CLI + skill that actually work on the real web — anti-bot bypass, JS rendering, login sessions, and multi-backend search."
 requires-python = ">=3.11"
 dependencies = [

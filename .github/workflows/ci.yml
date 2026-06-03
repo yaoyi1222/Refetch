@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+# The whole test suite is fully offline (network code lives in bench/, which
+# pytest never collects). So CI installs the package + [dev] extras and runs
+# pytest directly — no `playwright install`, no API keys, no network.
+jobs:
+  lint-and-test:
+    name: lint + full suite (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Ruff
+        run: ruff check src tests bench
+      - name: Pytest
+        run: pytest -q
+
+  windows-subset:
+    name: cross-platform subset (windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      # The modules with OS-specific paths / atomic writes / process liveness:
+      # canonical, cache (SQLite + os.replace), jobs (PID + create_time, .cancel
+      # file), sitemap, batch-fetch. Green here proves the v0.3 acceptance §10.9
+      # Windows gate without needing a browser on the runner.
+      - name: Pytest (subset)
+        run: >
+          pytest -q
+          tests/test_canonical.py
+          tests/test_cache.py
+          tests/test_jobs.py
+          tests/test_sitemap.py
+          tests/test_batch_fetch.py

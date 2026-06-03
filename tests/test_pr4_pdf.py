@@ -125,7 +125,8 @@ def test_fetch_pdf_extracts_title_from_metadata(monkeypatch):
     """Closes #41. When pypdf metadata has a real title, surface it directly."""
     mock_reader = MagicMock()
     mock_reader.metadata = MagicMock(title="Annual Report 2025")
-    page1 = MagicMock(); page1.extract_text.return_value = "body text"
+    page1 = MagicMock()
+    page1.extract_text.return_value = "body text"
     mock_reader.pages = [page1]
     monkeypatch.setattr("lightcrawl.fetch_pdf.ccr.get",
                         lambda *a, **kw: _fake_curl_response())
