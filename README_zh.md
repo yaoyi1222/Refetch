@@ -8,8 +8,8 @@
 
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-270%20passing-brightgreen.svg)](tests/)
-[![Version](https://img.shields.io/badge/version-0.2.0-blue.svg)](CONTRIBUTING.md)
+[![Tests](https://img.shields.io/badge/tests-597%20passing-brightgreen.svg)](tests/)
+[![Version](https://img.shields.io/badge/version-0.3.0-blue.svg)](CONTRIBUTING.md)
 
 [English](README.md) · [中文](README_zh.md) · [CONTRIBUTING](CONTRIBUTING.md)
 
@@ -60,6 +60,15 @@ lightcrawl 是一个本地 CLI，任何 AI Agent（Claude Code、Codex、Gemini 
 - **登录 Profile** — `auth login` 弹出有头 Chromium，用户手动登录（密码永不接触工具），session 保存复用。
 - **域名绑定** — Profile 绑定到登录 URL 的 eTLD+1。
 - **SSRF 防护** — 默认拦截 loopback、私有网段、link-local IP。
+
+### v0.3 — 本地 firecrawl（`map`、`crawl`、缓存）
+
+- **`map`** — 站内 URL 发现，sitemap 优先（`robots.txt` → `/sitemap.xml` → `/sitemap_index.xml`），无 sitemap 时回退首页 `<a>` 链接。`lightcrawl map https://fastapi.tiangolo.com/`。
+- **`crawl`** — BFS 多页抓取，append-only 落盘 job 存储、崩溃安全恢复、可取消：`crawl`、`crawl-status`、`crawl-resume`、`crawl-cancel`、`jobs`。逐 host 强制 `robots.txt`，支持 `--include-path`/`--exclude-path`（正则）、`--max-pages`/`--max-depth`。
+- **`batch-fetch`** — 经共享 Router/缓存并行抓取多个 URL，聚合为单个 JSON；单个失败不影响其余结果。
+- **本地缓存** — 通过 `--max-age <时长>` 显式开启(比 `<时长>` 新鲜则用缓存正文,否则实时抓取并写入)。`--no-store` 只读不写、`--cache-only` 离线只读、`--no-cache` 完全绕过。key 含规范化 URL **+ profile**,认证/非认证抓取互不串扰。裸 `fetch` 默认行为不变 — 不带 flag 既不读也不写缓存。
+- **条件请求** — 已过期但带 `ETag`/`Last-Modified` 的缓存项,在 L1（指纹伪装）路径发条件 GET；`304` 复用缓存正文并刷新新鲜度（`revalidated: true`）。
+- **`cache stats` / `cache clear`** — 查看缓存大小 + host 分布（含 legacy dumps），或全量/按 host 清理。
 
 ---
 
@@ -132,14 +141,21 @@ cli.py ─── Router (router.py) ────────► fetch_http.py   
 
 | 命令 | 用途 |
 |---|---|
-| `lightcrawl fetch <url>` | 自动策略升级抓取。支持 `--output-format`、`--selector`、`--actions`、`--mobile`、`--header`、`--include-tag`/`--exclude-tag`、`--remove-base64-images`，screenshot / links / images 输出。 |
+| `lightcrawl fetch <url>` | 自动策略升级抓取。支持 `--output-format`、`--selector`、`--actions`、`--mobile`、`--header`、`--include-tag`/`--exclude-tag`、`--remove-base64-images`、下方缓存 flag，screenshot / links / images 输出。 |
+| `lightcrawl map <url>` | 站内 URL 发现（sitemap 优先，首页回退）。`--search`、`--limit`。 |
+| `lightcrawl crawl <url>` | BFS 多页抓取。`--max-pages`、`--max-depth`、`--include-path`/`--exclude-path`（正则）、`--no-cache`。 |
+| `lightcrawl crawl-status` / `crawl-resume` / `crawl-cancel` / `jobs` | 查看、恢复（崩溃安全）、取消 crawl，或列出所有 job。 |
+| `lightcrawl batch-fetch <url...>` | 并行抓取多个 URL；聚合的逐 URL JSON。 |
+| `lightcrawl cache stats` / `cache clear` | 查看或清理本地抓取缓存。 |
 | `lightcrawl search <query>` | Web 搜索，结构化结果 + 每条结果的 `fetch_hint`。 |
 | `lightcrawl search-and-read <query>` | 搜索 + 并发抓取 top N。 |
 | `lightcrawl list-backends` | 报告已配置的搜索后端。 |
 | `lightcrawl auth login <profile> <url>` | 有头浏览器手动登录，保存 profile。 |
 | `lightcrawl auth list` / `show` / `revoke` | 管理已保存的登录 profile。 |
 
-完整 flag：`lightcrawl <subcmd> --help`。
+缓存 flag（用于 `fetch` / `batch-fetch`）：`--max-age <时长>` 更新鲜则命中并写入（`30m`、`1h`、`24h`）、`--no-store` 只读不写、`--cache-only` 离线命中否则 `CACHE_MISS`、`--no-cache` 绕过。
+
+完整 flag：`lightcrawl <subcmd> --help`，或 `lightcrawl --version`。
 
 ---
 
@@ -159,10 +175,12 @@ cli.py ─── Router (router.py) ────────► fetch_http.py   
 
 ## vs firecrawl
 
-lightcrawl 对标 firecrawl `/scrape` 端点 — 不含 `/crawl`、`/map` 和 LLM 提取（这些延后到 v0.3+）。
+lightcrawl 对标 firecrawl `/scrape` 端点，并自 v0.3 起覆盖 `/map` 与 `/crawl`。LLM 提取仍延后。
 
-| firecrawl `/scrape` 参数 | lightcrawl 状态 |
+| firecrawl 端点 / 参数 | lightcrawl 状态 |
 |---|---|
+| `/map`（URL 发现） | ✅ `lightcrawl map`（v0.3） |
+| `/crawl`（多页 BFS） | ✅ `lightcrawl crawl` + 生命周期子命令（v0.3） |
 | `url` | ✅ |
 | `formats: [markdown, html, rawHtml, screenshot, links, ..., images]` | ✅ markdown、html、text、screenshot、markdown+screenshot、links、images |
 | `headers` | ✅ `--header KEY=VAL`（可重复） |
@@ -171,10 +189,10 @@ lightcrawl 对标 firecrawl `/scrape` 端点 — 不含 `/crawl`、`/map` 和 LL
 | `actions`（click、write、screenshot、scroll、wait、press） | ✅ `--actions '[...]'` |
 | `mobile` | ✅ `--mobile`（iOS Safari impersonate） |
 | `onlyMainContent` | ✅ 默认行为（自动定位 `<main>`/`<article>`） |
-| `removeBase64Images` | ✅ `--remove-base64-images` |
-| `location`（国家） | 延后到 v0.3 |
+| `removeBase64Images` | ✅ **v0.3 起默认 `True`**（只剥离 `data:` URI 图片；外链 `<img>` 保留进 markdown）。用 `--no-remove-base64-images` 恢复 v0.2 行为。 |
+| `location`（国家） | 延后到 v0.4+ |
 | `extract`（LLM 结构化） | 延后到 v0.5 |
-| `blockAds` | 延后到 v0.3 |
+| `blockAds` | 延后到 v0.4+ |
 | 云端托管 | ❌ — 本地运行（你的 IP、你的 cookie、不过第三方云） |
 | 免费 | ✅ — MIT 协议，核心抓取无需 API key |
 

@@ -1,6 +1,6 @@
 ---
 name: lightcrawl
-description: Use this skill for fetching a specific URL when the built-in WebFetch tool fails or you need anti-bot bypass, JS rendering, login sessions, or selector-scoped extraction. Also use it for web search when you need richer snippets than the built-in WebSearch or when you want search plus page content in one call. Invoked as a local CLI via the Bash tool — `lightcrawl fetch <url>`, `lightcrawl search <query>`, `lightcrawl search-and-read <query>`, `lightcrawl auth login <profile> <url>`. Do not use for files already in the conversation.
+description: Use this skill for fetching a specific URL when the built-in WebFetch tool fails or you need anti-bot bypass, JS rendering, login sessions, or selector-scoped extraction. Also use it for web search when you need richer snippets than the built-in WebSearch or when you want search plus page content in one call. For multi-page work use `lightcrawl map` (discover a site's URLs), `lightcrawl crawl` (BFS multi-page download), and `lightcrawl batch-fetch` (parallel multi-URL); an opt-in local cache (`--max-age`) makes repeated fetches near-free. Invoked as a local CLI via the Bash tool — `lightcrawl fetch <url>`, `lightcrawl search <query>`, `lightcrawl search-and-read <query>`, `lightcrawl map <url>`, `lightcrawl crawl <url>`, `lightcrawl auth login <profile> <url>`. Do not use for files already in the conversation.
 ---
 
 # lightcrawl Skill
@@ -19,6 +19,16 @@ Search:
 - `lightcrawl search-and-read <query> [--depth ...] [--read-top-n N] [--read-max-inline-tokens N] [--profile ...] [--timeout-ms N]`
 - `lightcrawl list-backends`
 
+Discover & crawl (v0.3):
+- `lightcrawl map <url> [--search SUBSTR] [--limit N]` — list in-domain URLs (sitemap-first, homepage fallback)
+- `lightcrawl crawl <url> [--max-pages N] [--max-depth N] [--include-path REGEX] [--exclude-path REGEX] [--no-cache]` — BFS multi-page crawl, returns a `job_id`
+- `lightcrawl crawl-status <job_id>` / `lightcrawl crawl-resume <job_id>` / `lightcrawl crawl-cancel <job_id>` / `lightcrawl jobs`
+- `lightcrawl batch-fetch <url> [<url> ...]` — fetch many URLs in parallel; aggregated per-URL JSON
+
+Cache (v0.3, opt-in — see "Cache flags" below):
+- `lightcrawl cache stats` — size + per-host breakdown (incl. legacy dumps)
+- `lightcrawl cache clear [--host HOST]` — clear all, or one host
+
 Auth (shared by fetch and search):
 - `lightcrawl auth login <profile> <url> [--success-selector ...] [--timeout-ms ...]`
 - `lightcrawl auth list`
@@ -36,6 +46,10 @@ Full flags: `lightcrawl <subcmd> --help`.
 | Wants a researched answer from multiple pages | `lightcrawl search-and-read "<query>" --read-top-n 3` |
 | Already saw search results, wants the full text of a result | `lightcrawl fetch <url-from-results>` |
 | Not sure which search backends are available | `lightcrawl list-backends` — always run before first search |
+| Wants every URL under a domain (find a page, sitemap) | `lightcrawl map <url>` |
+| Wants to download a whole docs section / many pages of one site | `lightcrawl crawl <url> --max-pages N` |
+| Has a known list of URLs to fetch at once | `lightcrawl batch-fetch <url> <url> ...` |
+| Re-fetching the same pages repeatedly (cost-sensitive) | add `--max-age 1h` (see Cache flags) |
 
 ## Reading command output
 
@@ -79,9 +93,13 @@ All commands print one JSON object on stdout. Useful patterns from the Bash tool
 | `--exclude-tag <TAG>` | Remove these tags before extraction (repeatable). Stacked on top of built-in script/style strip. |
 | `--header KEY=VAL` | Extra HTTP request header (repeatable). Caller wins on collision with impersonate defaults. |
 | `--mobile` | Emulate iOS Safari on both layers (UA + TLS fingerprint + viewport). |
-| `--remove-base64-images` | Drop data: URI images but keep real images in markdown output. |
+| `--no-remove-base64-images` | Keep inline `data:` URI images. v0.3 strips them by default (real images survive); pass this to restore the v0.2 behavior. |
 | `--max-inline-tokens` | Increase for deep-dive reads; decrease to save tokens on partial reads. |
 | `--actions '[...]'` | Execute browser actions after page load: click, write, press, wait, scroll, screenshot. Forces L2. JSON or `@file.json`. |
+| `--max-age <dur>` | Enables the cache: serve the stored body if fresher than `<dur>` (`30m`, `1h`, `24h`), otherwise fetch live **and store** the result (and, if a validator is present, revalidate via `304`). |
+| `--no-store` | Read the cache (respecting `--max-age`) but don't write this fetch back. |
+| `--cache-only` | Offline mode: return a cache hit or `CACHE_MISS`, never hit the network. |
+| `--no-cache` | Bypass the cache entirely for this fetch (neither read nor write). |
 
 ### Browser actions (PR 5)
 
@@ -197,6 +215,62 @@ If search exits 0 with empty `results`: that's an honest "no matches". **Don't**
 ```
 
 Read from `fetched_pages` for successful content, `fetch_failures` for per-URL errors. Each fetched page carries its own `headings` array with line numbers — use these to navigate long content (see "Long content").
+
+## Map, crawl & batch (v0.3)
+
+Use these when one `fetch` isn't enough — you need many pages of one site.
+
+### map — discover URLs
+
+`lightcrawl map <url>` lists in-domain URLs without fetching their bodies.
+Sitemap-first (`robots.txt` `Sitemap:` → `/sitemap.xml` → `/sitemap_index.xml`),
+falling back to homepage `<a>` links. Response: `{ok, source: "sitemap"|"homepage",
+count, urls: [...], notes?}`. Use it to find a specific page on a big site
+(`--search <substr>`) or to seed a crawl. It does **not** enforce robots
+allow/disallow (that's `crawl`) and does **not** fetch page content.
+
+### crawl — multi-page BFS
+
+`lightcrawl crawl <url> --max-pages N --max-depth D` runs a breadth-first crawl
+and returns a `job_id`. It enforces per-host `robots.txt`, dedups by canonical
+URL, and persists progress to disk so it survives a crash:
+
+- `lightcrawl crawl-status <job_id>` — progress (`pages_fetched`, `pages_skipped_cache`, status).
+- `lightcrawl crawl-resume <job_id>` — re-open an interrupted job; already-fetched pages aren't re-counted.
+- `lightcrawl crawl-cancel <job_id>` — stop a running crawl (terminal state `cancelled`).
+- `lightcrawl jobs` — list all jobs, newest first.
+- `--include-path <regex>` / `--exclude-path <regex>` filter on the URL path+query; `--no-cache` forces every page live.
+
+Crawl caches by default, so a second run of the same command skips pages still
+fresh in the cache (near-free re-crawl); tune the window with `--max-age <dur>`
+or force everything live with `--no-cache`.
+
+### batch-fetch — known URL list
+
+`lightcrawl batch-fetch <url> <url> ...` fetches a fixed list in parallel through
+the shared Router/cache. Returns one JSON object with a per-URL result array;
+one URL failing never drops the others (each carries its own `ok`/`error_code`).
+Honors the same cache flags.
+
+## Cache (v0.3)
+
+The cache is **opt-in** — a bare `lightcrawl fetch <url>` neither reads nor writes
+it (byte-identical to v0.2). Turn it on per-call:
+
+- `--max-age <dur>` — enables the cache: serve the stored body if it's fresher
+  than `<dur>` (`30m`/`1h`/`24h`), else fetch live **and store** the result. The
+  response carries `cache_hit: true` when served from cache.
+- `--no-store` — read the cache (respecting `--max-age`) but don't write this
+  fetch back.
+- On a stale entry that carries an `ETag`/`Last-Modified`, the next fetch sends a
+  conditional GET; a `304` reuses the cached body and the response shows
+  `revalidated: true` — cheaper than a full re-download.
+- `--cache-only` — return a hit or `CACHE_MISS` (offline; never touches the network).
+- `--no-cache` — bypass for this call.
+
+Inspect/clear with `lightcrawl cache stats` and `lightcrawl cache clear [--host HOST]`.
+The cache key includes the active `--profile`, so an authed and an unauthed fetch of
+the same URL never collide.
 
 ## Login-required pages
 

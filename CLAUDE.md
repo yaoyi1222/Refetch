@@ -4,16 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`lightcrawl` is a local CLI plus an agent-facing skill (`skills/lightcrawl/SKILL.md`). The CLI exposes 7 subcommands: `fetch`, `search`, `search-and-read`, `list-backends`, `auth login`, `auth list`/`auth show`, `auth revoke`. Every subcommand prints a single JSON object on stdout and exits 0 on `ok: true` / 1 on `ok: false`. It is a drop-in replacement for the built-in `WebFetch` / `WebSearch` that survives Cloudflare/TLS-fingerprint blocks, JS-rendered SPAs, and login-walled pages.
+`lightcrawl` is a local CLI plus an agent-facing skill (`skills/lightcrawl/SKILL.md`). As of v0.3 the CLI exposes: `fetch`, `search`, `search-and-read`, `map`, `crawl` (+ `crawl-status`/`crawl-resume`/`crawl-cancel`/`jobs`), `batch-fetch`, `cache stats`/`cache clear`, `list-backends`, `auth login`/`auth list`/`auth show`/`auth revoke`, and a top-level `--version`. Every subcommand prints a single JSON object on stdout and exits 0 on `ok: true` / 1 on `ok: false`. It is a drop-in replacement for the built-in `WebFetch` / `WebSearch` that survives Cloudflare/TLS-fingerprint blocks, JS-rendered SPAs, and login-walled pages, and adds firecrawl-style `/map` + `/crawl` plus an opt-in local cache.
 
-Source layout: package lives at `src/lightcrawl/`; tests at `tests/`; benchmark + diagnostic harness at `bench/`; the agent-facing skill at `skills/lightcrawl/SKILL.md`. There is no MCP server in this repo — agents invoke `lightcrawl` through their normal shell tool.
+Source layout: package lives at `src/lightcrawl/`; tests at `tests/`; benchmark + diagnostic harness at `bench/`; the agent-facing skill at `skills/lightcrawl/SKILL.md`. There is no MCP server in this repo — agents invoke `lightcrawl` through their normal shell tool. Version lives in two places kept in lockstep by `tests/test_version.py`: `pyproject.toml` and `src/lightcrawl/__init__.py:__version__`.
 
 ## Common commands
 
 All commands assume the repo's `.venv` is set up via `pip install -e ".[dev,bench]"` and `playwright install chromium`.
 
 ```bash
-.venv/bin/pytest -q                              # full suite (fully offline, 270 tests)
+.venv/bin/pytest -q                              # full suite (fully offline, 597 tests)
 .venv/bin/pytest tests/test_router.py -q         # one file
 .venv/bin/pytest tests/test_router.py::test_blocks_private_url   # one test
 .venv/bin/ruff check src tests bench             # lint
@@ -69,6 +69,13 @@ Every async subcommand routes through `cli._safe_run()` which converts a `FetchE
 - Overflow handling: anything over `max_inline_tokens` is dumped to `~/.lightcrawl/dumps/<sha1>.md`; the response carries `dump_path` plus the heading list with line numbers so the agent can grep the dump.
 
 **Search service** (`search/service.py`): `search_and_read` runs `search` then fans out `Router.fetch` calls via `asyncio.gather(..., return_exceptions=True)` with each fetch wrapped in a `try/except` that returns a failure dict — one crash cannot lose the other in-flight results.
+
+**v0.3 subsystems** (all share the same one-JSON / errors-as-values contract):
+- **Canonicalization** (`canonical.py`): pure-function URL canonicalization + `url_hash(canonical_url, profile=...)`, the single source of truth for cache keys and crawl dedup. The `profile` dimension is a security boundary — never bypass it when adding a URL-keyed code path.
+- **Cache** (`cache.py` + Router cache aspect): SQLite-WAL index + atomic body store under `~/.lightcrawl/cache/`, opt-in per-request. The bare `fetch` default stays byte-identical to v0.2 (no read/write unless a cache flag opts in). Conditional requests (ETag/Last-Modified → `304`) ride the L1 (curl_cffi impersonate) path only; `_revalidation` in `router.py` builds the conditional headers, `mark_revalidated` refreshes freshness on a 304.
+- **Map** (`sitemap.py` + `lightcrawl map`): sitemap-first URL discovery, homepage `<a>` fallback. Fetches go through `Router.fetch` (inherits SSRF guard + escalation); sitemap reads use a very high `max_inline_tokens` so the raw XML isn't dumped/truncated.
+- **Crawl** (`jobs.py` + `crawl.py` + `robots.py`): BFS engine + append-only on-disk job store with crash-safe resume and cancellation. Liveness uses psutil PID + create_time double-check; all writes are atomic via `os.replace` (Windows-safe); remote signals via a `.cancel` file (no `loop.add_signal_handler`).
+- **Batch** (`batch.py` + `lightcrawl batch-fetch`): parallel multi-URL fetch through the shared Router/cache; one URL's failure never drops the others.
 
 ## Conventions and gotchas
 

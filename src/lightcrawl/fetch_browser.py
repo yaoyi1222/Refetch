@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from playwright.async_api import (
     Browser,
-    BrowserContext,
     TimeoutError as PWTimeout,
     async_playwright,
 )

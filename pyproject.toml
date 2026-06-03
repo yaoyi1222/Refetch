@@ -1,6 +1,6 @@
 [project]
 name = "lightcrawl"
-version = "0.2.0"
+version = "0.3.0"
 description = "Replaces Claude Code's built-in WebFetch and WebSearch with a local CLI + skill that actually work on the real web — anti-bot bypass, JS rendering, login sessions, and multi-backend search."
 requires-python = ">=3.11"
 dependencies = [
@@ -9,6 +9,13 @@ dependencies = [
     "playwright-stealth>=1.0.6",
     "markdownify>=0.11.6",
     "lxml>=5.0.0",
+    # cssselect powers content.py's `.cssselect()` selector path (--selector and
+    # _suggested_selectors). lxml needs it installed to translate CSS → XPath;
+    # without it `.cssselect()` raises and the selector feature silently degrades
+    # to <body>. It was only ever present transitively via the [bench] extra
+    # (readability-lxml → cssselect), which masked the missing declaration until
+    # CI ran a [dev]-only install. See v0.3 PR 8.
+    "cssselect>=1.2.0",
     "tldextract>=5.1.0",
     # httpx is used by all three search backends (brave/serper/tavily) and by
     # auth._check_cdp_pages. Not optional — search and auth login both import
