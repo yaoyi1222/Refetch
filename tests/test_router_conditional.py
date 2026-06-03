@@ -240,6 +240,37 @@ async def test_last_modified_only(router: Router, fake_clock):
     assert "If-None-Match" not in origin.last_headers
 
 
+# 10 — a 304 reports cache_fetched_at_ms consistent with cache_age_ms == 0.
+async def test_revalidated_fetched_at_matches_age_zero(router: Router, fake_clock):
+    origin = Origin()
+    await _fetch(router, origin, FetchRequest(
+        url="https://example.com/", max_age_ms=_HOUR, store_in_cache=True,
+    ))
+    fake_clock[0] += 2 * _HOUR  # stale → triggers a conditional GET → 304
+    out = await _fetch(router, origin, FetchRequest(
+        url="https://example.com/", max_age_ms=_HOUR, store_in_cache=True,
+    ))
+    assert out.get("revalidated") is True
+    assert out["cache_age_ms"] == 0
+    # The refreshed stamp must reflect "just now", not the original fetch time.
+    assert out["cache_fetched_at_ms"] == fake_clock[0]
+
+
+# 11 — a 304 with nothing cached to serve (caller-supplied conditional header)
+# surfaces as a failure instead of escalating to L2 on an empty body.
+async def test_orphan_304_fails_without_escalation(router: Router, fake_clock):
+    origin = Origin()
+    # Bare fetch (no cache opt-in → reval_hit is None) but the caller hands in
+    # a conditional header, so the origin answers 304.
+    out = await _fetch(router, origin, FetchRequest(
+        url="https://example.com/", headers={"If-None-Match": _ETAG},
+    ))
+    assert out["ok"] is False
+    assert out["error_code"] == "HTTP_ERROR"
+    # Only the single L1 call happened — no L2 browser escalation.
+    assert len(origin.calls) == 1
+
+
 # 9 — HttpResult carries the validator fields.
 def test_httpresult_has_validator_fields():
     r = HttpResult(

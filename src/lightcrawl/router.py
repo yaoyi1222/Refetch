@@ -488,10 +488,27 @@ class Router:
         if r.status_code == 304 and reval_hit is not None:
             # _success_from_cache records the Attempt("http", "304") itself.
             try:
-                self._get_cache().mark_revalidated(req.url, profile=req.profile)
+                revalidated_at = self._get_cache().mark_revalidated(req.url, profile=req.profile)
             except (OSError, sqlite3.Error):
-                pass
-            return _success_from_cache(req, reval_hit, attempts, revalidated=True)
+                revalidated_at = None
+            return _success_from_cache(
+                req, reval_hit, attempts,
+                revalidated=True, revalidated_at_ms=revalidated_at,
+            )
+
+        # 304 with nothing in hand to serve. Our own validators are sent only
+        # when we hold the entry, so this means a caller-supplied conditional
+        # header (``--header If-None-Match=...``) drew a 304 we can't satisfy.
+        # Surface it rather than fall through — the empty body would otherwise
+        # trip ``_should_escalate_to_browser`` into a pointless L2 launch.
+        if r.status_code == 304:
+            attempts.append(Attempt("http", "304"))
+            return _failure(
+                req.url, ErrorCode.HTTP_ERROR,
+                "304 Not Modified but no cached entry to serve "
+                "(conditional header sent without a stored validator)",
+                attempts, status_code=304,
+            )
 
         attempts.append(Attempt("http", str(r.status_code)))
 
@@ -539,10 +556,23 @@ class Router:
             return _failure(req.url, e.code, e.detail, attempts)
         if r.status_code == 304 and reval_hit is not None:
             try:
-                self._get_cache().mark_revalidated(req.url, profile=req.profile)
+                revalidated_at = self._get_cache().mark_revalidated(req.url, profile=req.profile)
             except (OSError, sqlite3.Error):
-                pass
-            return _success_from_cache(req, reval_hit, attempts, revalidated=True)
+                revalidated_at = None
+            return _success_from_cache(
+                req, reval_hit, attempts,
+                revalidated=True, revalidated_at_ms=revalidated_at,
+            )
+        # Orphan 304 (caller-supplied conditional header, nothing cached to
+        # serve): surface it instead of returning an empty-bodied success.
+        if r.status_code == 304:
+            attempts.append(Attempt("http", "304"))
+            return _failure(
+                req.url, ErrorCode.HTTP_ERROR,
+                "304 Not Modified but no cached entry to serve "
+                "(conditional header sent without a stored validator)",
+                attempts, status_code=304,
+            )
         attempts.append(Attempt("http", str(r.status_code)))
         extracted = content_mod.html_to_markdown(
             r.text,
@@ -748,7 +778,7 @@ class Router:
 
 def _success_from_cache(
     req: FetchRequest, hit: CacheHit, attempts: list[Attempt],
-    *, revalidated: bool = False,
+    *, revalidated: bool = False, revalidated_at_ms: int | None = None,
 ) -> dict:
     """Build the same response envelope as a fresh fetch from a CacheHit.
 
@@ -771,7 +801,14 @@ def _success_from_cache(
         "cache_hit": True,
         "revalidated": revalidated,
         "cache_age_ms": 0 if revalidated else hit.age_ms,
-        "cache_fetched_at_ms": hit.fetched_at_ms,
+        # On a 304 ``mark_revalidated`` reset ``fetched_at`` to now, so report
+        # that refreshed value — emitting the stale pre-revalidation stamp
+        # would contradict ``cache_age_ms == 0``. (Falls back to the old stamp
+        # only if the freshness write was skipped.)
+        "cache_fetched_at_ms": (
+            revalidated_at_ms if revalidated and revalidated_at_ms is not None
+            else hit.fetched_at_ms
+        ),
         "fetched_at": _now_iso(),
         "title": hit.title,
         "content": hit.markdown,
