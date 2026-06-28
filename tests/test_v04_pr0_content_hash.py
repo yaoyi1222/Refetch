@@ -37,11 +37,13 @@ def _isolate_paths(tmp_path, monkeypatch):
     (tmp_path / "profiles").mkdir(parents=True)
 
 
-_SIMPLE_HTML = """
-<html><head><title>Test Page</title></head><body>
-  <article><h1>Hello World</h1><p>Some body text for content hash testing.</p></article>
-</body></html>
-"""
+_SIMPLE_HTML = (
+    "<html><head><title>Test Page</title></head><body>"
+    "<article><h1>Hello World</h1>"
+    "<p>Body text long enough to avoid the tiny-body browser-escalation "
+    "heuristic in _should_escalate_to_browser (len >= 200 chars).</p>"
+    "</article></body></html>"
+)
 
 _FAKE_HTTP = HttpResult(
     final_url="https://example.com/",
