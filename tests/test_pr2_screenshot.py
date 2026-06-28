@@ -258,8 +258,8 @@ async def test_default_call_has_no_screenshots_key(router):
 
     expected_keys = {
         "ok", "url", "final_url", "strategy_used", "fetched_at", "title",
-        "content", "content_truncated", "dump_path", "metadata", "attempts",
-        "headings",
+        "content", "content_truncated", "dump_path", "full_content_hash",
+        "metadata", "attempts", "headings",
     }
     assert set(out.keys()) == expected_keys
     assert "screenshots" not in out

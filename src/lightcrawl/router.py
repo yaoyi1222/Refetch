@@ -743,9 +743,9 @@ class Router:
             return _failure(req.url, e.code, e.detail, attempts, suggestions=suggestions)
 
         attempts.append(Attempt("pdf", "200"))
-        inline, truncated, dump_path = content_mod.maybe_dump(
-            req.url, result.markdown, req.max_inline_tokens
-        )
+        body = result.markdown
+        full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
+        inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
         return {
             "ok": True,
             "url": req.url,
@@ -756,6 +756,7 @@ class Router:
             "content": inline,
             "content_truncated": truncated,
             "dump_path": dump_path,
+            "full_content_hash": full_content_hash,
             "metadata": {
                 "status_code": 200,
                 "content_type": "application/pdf",
@@ -835,6 +836,7 @@ def _success_from_http(
     strategy_used: str,
 ) -> dict:
     body = _format_body(req.output_format, extracted, r.text)
+    full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
     inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
     # PR 3 — surface the response validators top-level so ``Cache.store``
     # persists them (it reads ``response["headers"]``) and the next fetch can
@@ -859,6 +861,7 @@ def _success_from_http(
         "content": inline,
         "content_truncated": truncated,
         "dump_path": dump_path,
+        "full_content_hash": full_content_hash,
         "metadata": {
             "status_code": r.status_code,
             "content_type": r.content_type,
@@ -885,6 +888,7 @@ def _success_from_browser(
     strategy_used: str,
 ) -> dict:
     body = _format_body(req.output_format, extracted, r.text)
+    full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
     inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
     result: dict = {
         "ok": True,
@@ -896,6 +900,7 @@ def _success_from_browser(
         "content": inline,
         "content_truncated": truncated,
         "dump_path": dump_path,
+        "full_content_hash": full_content_hash,
         "metadata": {
             "status_code": r.status_code,
             "content_type": r.content_type,

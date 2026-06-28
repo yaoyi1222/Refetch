@@ -271,8 +271,8 @@ async def test_default_fetch_url_response_keys_unchanged(router):
 
     expected_keys = {
         "ok", "url", "final_url", "strategy_used", "fetched_at", "title",
-        "content", "content_truncated", "dump_path", "metadata", "attempts",
-        "headings",
+        "content", "content_truncated", "dump_path", "full_content_hash",
+        "metadata", "attempts", "headings",
     }
     assert expected_keys.issubset(out.keys())
     # No new top-level keys leaked by accident
