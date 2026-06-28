@@ -483,6 +483,7 @@ def _resolve_crawl_params(args: argparse.Namespace) -> crawl.CrawlParams:
         user_agent=args.user_agent,
         output_format=args.output_format,
         profile=args.profile,
+        throttle_delay_ms=getattr(args, "throttle_delay_ms", 0),
         **cache,
     )
 
@@ -1004,6 +1005,10 @@ def _add_crawl_parser(sub: argparse._SubParsersAction) -> None:
         help="body format stored per page (default: markdown)",
     )
     p.add_argument("--profile", help="use a saved login profile for fetches")
+    p.add_argument(
+        "--throttle-delay-ms", dest="throttle_delay_ms", type=int, default=0,
+        help="minimum milliseconds between fetches to the same host (default: 0, disabled)",
+    )
     _add_cache_flags(p)
     p.set_defaults(func=_cmd_crawl)
 
