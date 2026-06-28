@@ -59,6 +59,9 @@ class CrawlParams:
     store_in_cache: bool = True
     no_cache: bool = False
     throttle_delay_ms: int = 0
+    # v0.4 PR-2 — drop requests to known ad/tracker domains (top-level URL
+    # match + Playwright sub-resource abort).
+    block_ads: bool = False
 
 
 def _domain_allows(url: str, params: CrawlParams) -> bool:
@@ -115,6 +118,7 @@ async def fetch_one(item: FrontierItem, params: CrawlParams, router: Router,
                 cache_only=params.cache_only,
                 store_in_cache=params.store_in_cache,
                 no_cache=params.no_cache,
+                block_ads=params.block_ads,
             ))
         except Exception as e:  # noqa: BLE001 — per-page isolation; recorded, not swallowed
             result = {"ok": False, "url": item.url,

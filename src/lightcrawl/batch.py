@@ -36,6 +36,8 @@ class BatchParams:
     cache_only: bool = False
     store_in_cache: bool = True
     no_cache: bool = False
+    # v0.4 PR-2 — silently drop requests to known ad/tracker domains.
+    block_ads: bool = False
 
 
 def _exc_to_failure(url: str, exc: BaseException) -> dict:
@@ -75,6 +77,7 @@ async def run_batch_fetch(urls: list[str], params: BatchParams, router: Router) 
                     cache_only=params.cache_only,
                     store_in_cache=params.store_in_cache,
                     no_cache=params.no_cache,
+                    block_ads=params.block_ads,
                 ))
             except Exception as e:  # noqa: BLE001 — per-URL isolation; recorded, not swallowed
                 return _exc_to_failure(url, e)

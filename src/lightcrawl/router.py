@@ -12,7 +12,22 @@ from urllib.parse import urlparse
 from . import auth, content as content_mod, fetch_browser, fetch_http, fetch_pdf
 from .cache import Cache, CacheHit
 from .errors import ErrorCode, FetchError
-from .url_safety import domain_matches, validate_url
+from .url_safety import domain_matches, etld1, validate_url
+
+# v0.4 PR-2 — ad/tracker domain block list. Matched against eTLD+1 of the
+# request URL when block_ads=True. Note: googletagmanager.com can break SPAs
+# that lazy-load via GTM — document this in the help text.
+_AD_DOMAINS: frozenset[str] = frozenset({
+    "googletagmanager.com",   # NOTE: can break SPAs that lazy-load via GTM
+    "google-analytics.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "facebook.net",
+    "fbcdn.net",
+    "hotjar.com",
+    "optimizely.com",
+})
 
 Strategy = Literal["auto", "http", "browser", "authed"]
 
@@ -85,6 +100,8 @@ class FetchRequest:
     cache_only: bool = False
     store_in_cache: bool = False
     no_cache: bool = False
+    # v0.4 PR-2 — silently drop requests to known ad/tracker domains.
+    block_ads: bool = False
 
 
 def _now_iso() -> str:
@@ -395,6 +412,17 @@ class Router:
             resolved = validate_url(req.url)
         except FetchError as e:
             return _failure(req.url, e.code, e.detail, attempts=[])
+
+        # v0.4 PR-2 — ad/tracker domain block (opt-in via block_ads=True).
+        # Runs after SSRF validation (URL is safe) but before any fetch attempt.
+        if req.block_ads:
+            host_domain = etld1(req.url)
+            if host_domain in _AD_DOMAINS:
+                return _failure(
+                    req.url, ErrorCode.URL_BLOCKED,
+                    f"ad/tracker domain blocked: {host_domain}",
+                    attempts=[],
+                )
 
         attempts: list[Attempt] = []
 
