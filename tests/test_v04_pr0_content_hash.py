@@ -78,9 +78,9 @@ async def test_full_content_hash_covers_pre_truncation_body(router, monkeypatch)
     captured: list[str] = []
     original_maybe_dump = content_mod.maybe_dump
 
-    def spy(url, body, max_inline_tokens):
+    def spy(url, body, max_inline_tokens, **kwargs):
         captured.append(body)
-        return original_maybe_dump(url, body, max_inline_tokens)
+        return original_maybe_dump(url, body, max_inline_tokens, **kwargs)
 
     monkeypatch.setattr("lightcrawl.content.maybe_dump", spy)
 
@@ -156,6 +156,28 @@ def test_record_uses_full_content_hash_key_not_recomputed(tmp_path, monkeypatch)
     assert line["content_hash"] != hashlib.sha1(truncated_head.encode()).hexdigest()
     assert line["content_truncated"] is True
     assert line["dump_path"] == "/dumps/abc.md"
+
+
+async def test_cache_hit_exposes_full_content_hash(router, tmp_path, monkeypatch):
+    """_success_from_cache must emit full_content_hash so jobs.record() never writes null."""
+    from lightcrawl.cache import Cache
+
+    monkeypatch.setattr("lightcrawl.paths.CACHE_ROOT", tmp_path / "cache")
+    (tmp_path / "cache").mkdir()
+
+    with _PATCH_DNS, patch("lightcrawl.fetch_http.fetch", return_value=_FAKE_HTTP):
+        live = await router.fetch(FetchRequest(url="https://example.com/", store_in_cache=True))
+
+    assert live["ok"] is True
+    assert live["full_content_hash"]
+
+    with _PATCH_DNS:
+        hit = await router.fetch(FetchRequest(url="https://example.com/", max_age_ms=3600_000))
+
+    assert hit["ok"] is True
+    assert hit.get("cache_hit") is True
+    assert hit["full_content_hash"] == live["full_content_hash"]
+    assert hit["full_content_hash"]  # not empty string / None
 
 
 def test_record_failure_omits_content_fields(tmp_path, monkeypatch):

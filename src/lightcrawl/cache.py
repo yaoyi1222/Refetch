@@ -94,6 +94,7 @@ class CacheHit:
     metadata: dict = field(default_factory=dict)
     dump_path: str | None = None
     screenshot_path: str | None = None
+    content_hash: str = ""
 
 
 @dataclass
@@ -223,6 +224,7 @@ class Cache:
             "metadata": metadata,
             "dump_path": response.get("dump_path"),
             "screenshot_path": screenshot_path,
+            "content_hash": response.get("full_content_hash") or "",
         }
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         payload_path = self.payloads_dir / f"{key}.json"
@@ -519,6 +521,7 @@ class Cache:
                 metadata=data.get("metadata") or {},
                 dump_path=data.get("dump_path"),
                 screenshot_path=data.get("screenshot_path"),
+                content_hash=data.get("content_hash") or "",
             )
         except (OSError, json.JSONDecodeError, ValueError, TypeError):
             return None
