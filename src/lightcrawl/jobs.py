@@ -351,7 +351,7 @@ class Job:
         url = result.get("final_url") or result.get("url") or ""
         ok = bool(result.get("ok"))
         now = time_ms()
-        line = {
+        line: dict = {
             "url": url,
             "ok": ok,
             "status": (result.get("metadata") or {}).get("status_code") if ok else None,
@@ -359,6 +359,12 @@ class Job:
             "cache_hit": bool(result.get("cache_hit")),
             "fetched_at": now,
         }
+        if ok:
+            line["content"] = result.get("content")
+            line["content_hash"] = result.get("full_content_hash")
+            line["content_truncated"] = result.get("content_truncated", False)
+            line["dump_path"] = result.get("dump_path")
+            line["headings"] = result.get("headings", [])
         with self.results_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(line, ensure_ascii=False) + "\n")
             f.flush()

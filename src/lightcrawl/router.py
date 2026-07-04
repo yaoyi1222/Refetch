@@ -743,9 +743,9 @@ class Router:
             return _failure(req.url, e.code, e.detail, attempts, suggestions=suggestions)
 
         attempts.append(Attempt("pdf", "200"))
-        inline, truncated, dump_path = content_mod.maybe_dump(
-            req.url, result.markdown, req.max_inline_tokens
-        )
+        body = result.markdown
+        full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
+        inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens, content_hash=full_content_hash)
         return {
             "ok": True,
             "url": req.url,
@@ -756,6 +756,7 @@ class Router:
             "content": inline,
             "content_truncated": truncated,
             "dump_path": dump_path,
+            "full_content_hash": full_content_hash,
             "metadata": {
                 "status_code": 200,
                 "content_type": "application/pdf",
@@ -814,6 +815,7 @@ def _success_from_cache(
         "content": hit.markdown,
         "content_truncated": hit.content_truncated,
         "dump_path": hit.dump_path,
+        "full_content_hash": hit.content_hash,
         "metadata": hit.metadata,
         "attempts": [a.to_dict() for a in attempts] + [cache_attempt.to_dict()],
         "headings": hit.headings,
@@ -835,13 +837,12 @@ def _success_from_http(
     strategy_used: str,
 ) -> dict:
     body = _format_body(req.output_format, extracted, r.text)
-    inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
+    full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
+    inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens, content_hash=full_content_hash)
     # PR 3 — surface the response validators top-level so ``Cache.store``
     # persists them (it reads ``response["headers"]``) and the next fetch can
     # send a conditional GET. Lower-cased keys match what ``store`` reads.
-    # Only emit ``headers`` when a validator is actually present: a
-    # no-validator response stays byte-identical to the v0.2 default shape
-    # (a hard invariant enforced by test_pr1a/test_pr1b/test_pr2). Pages
+    # Only emit ``headers`` when a validator is actually present. Pages
     # that expose ETag / Last-Modified carry the key so ``Cache.store``
     # persists them for the next conditional request.
     headers: dict[str, str] = {}
@@ -859,6 +860,7 @@ def _success_from_http(
         "content": inline,
         "content_truncated": truncated,
         "dump_path": dump_path,
+        "full_content_hash": full_content_hash,
         "metadata": {
             "status_code": r.status_code,
             "content_type": r.content_type,
@@ -885,7 +887,8 @@ def _success_from_browser(
     strategy_used: str,
 ) -> dict:
     body = _format_body(req.output_format, extracted, r.text)
-    inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens)
+    full_content_hash = hashlib.sha1(body.encode("utf-8")).hexdigest()
+    inline, truncated, dump_path = content_mod.maybe_dump(req.url, body, req.max_inline_tokens, content_hash=full_content_hash)
     result: dict = {
         "ok": True,
         "url": req.url,
@@ -896,6 +899,7 @@ def _success_from_browser(
         "content": inline,
         "content_truncated": truncated,
         "dump_path": dump_path,
+        "full_content_hash": full_content_hash,
         "metadata": {
             "status_code": r.status_code,
             "content_type": r.content_type,
@@ -991,8 +995,9 @@ def _failure(
     final_url: str | None = None,
     status_code: int | None = None,
 ) -> dict:
-    """Failure response. Mirrors the key set of `_success_from_*` so CLI
-    callers can rely on a stable schema regardless of ok/error path."""
+    """Failure response. Intentionally omits content-only fields
+    (`full_content_hash`, `headings` content) that have no meaning when the
+    fetch did not produce a body."""
     strategy_used = attempts[-1].strategy if attempts else None
     return {
         "ok": False,

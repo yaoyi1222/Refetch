@@ -727,16 +727,23 @@ def estimate_tokens(text: str) -> int:
     return max(1, len(text) // CHARS_PER_TOKEN)
 
 
-def maybe_dump(url: str, content: str, max_inline_tokens: int) -> tuple[str, bool, str | None]:
+def maybe_dump(
+    url: str, content: str, max_inline_tokens: int, *, content_hash: str | None = None
+) -> tuple[str, bool, str | None]:
     """Return (inline_content, truncated, dump_path).
 
     If content fits within budget, returns it unchanged. Otherwise writes the
     full content to dumps/ and returns a truncated head + the dump path.
+
+    ``content_hash`` (when provided) is used as the filename digest so the
+    dump file is content-addressed and stable across re-crawls of the same URL.
     """
     if estimate_tokens(content) <= max_inline_tokens:
         return content, False, None
 
-    digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+    # ponytail: content-addressed key so a re-crawl of the same URL with new
+    # content lands in a new file; old results.jsonl entries remain valid.
+    digest = (content_hash or hashlib.sha1(url.encode("utf-8")).hexdigest())[:16]
     dump_path = DUMPS / f"{digest}.md"
     dump_path.write_text(content, encoding="utf-8")
     head = content[: max_inline_tokens * CHARS_PER_TOKEN]
