@@ -23,9 +23,13 @@ class DomainThrottle:
             return
         async with self._locks[host]:
             last = self._last_release.get(host)
-            self._last_release[host] = time.monotonic()
             if last is not None:
-                elapsed = time.monotonic() - last
-                to_sleep = (self.delay_ms / 1000) - elapsed
+                to_sleep = (self.delay_ms / 1000) - (time.monotonic() - last)
                 if to_sleep > 0:
                     await asyncio.sleep(to_sleep)
+            # Stamp the release time (after the sleep), so the next queued
+            # caller measures its gap from when we actually returned — not
+            # from when we entered the lock. Entry-time stamping collapses the
+            # delay under contention (queued callers inherit the prior waiter's
+            # already-elapsed sleep).
+            self._last_release[host] = time.monotonic()
