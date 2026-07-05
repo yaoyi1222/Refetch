@@ -28,6 +28,7 @@ from .canonical import canonicalize_url
 from .jobs import FrontierItem, Job
 from .robots import RobotsCache
 from .router import FetchRequest, Router
+from .throttle import DomainThrottle
 from .url_safety import etld1
 
 # crawl/batch default cache window — design §3 / §5.5 #9. The CLI (6.3) resolves
@@ -57,6 +58,7 @@ class CrawlParams:
     cache_only: bool = False
     store_in_cache: bool = True
     no_cache: bool = False
+    throttle_delay_ms: int = 0
 
 
 def _domain_allows(url: str, params: CrawlParams) -> bool:
@@ -95,11 +97,15 @@ def _outlinks(result: dict, params: CrawlParams) -> list[str]:
 
 
 async def fetch_one(item: FrontierItem, params: CrawlParams, router: Router,
-                    sem: asyncio.Semaphore) -> dict:
+                    sem: asyncio.Semaphore,
+                    throttle: DomainThrottle | None = None) -> dict:
     """Fetch one page via Router (cache handled by the Router aspect). Per-page
     fault isolation: any exception becomes a failed-page result so one crash
     can't abort the crawl. Carries ``depth`` through for expansion."""
     async with sem:
+        if throttle is not None:
+            host = urlsplit(item.url).hostname or ""
+            await throttle.acquire(host)
         try:
             result = await router.fetch(FetchRequest(
                 url=item.url,
@@ -146,6 +152,7 @@ async def run_crawl(params: CrawlParams, job: Job, router: Router) -> None:
         job.push_frontier(FrontierItem(params.seed, 0))
 
     sem = asyncio.Semaphore(params.concurrency)
+    throttle = DomainThrottle(delay_ms=params.throttle_delay_ms) if params.throttle_delay_ms > 0 else None
     in_flight: set[asyncio.Task] = set()
 
     try:
@@ -168,7 +175,7 @@ async def run_crawl(params: CrawlParams, job: Job, router: Router) -> None:
                     job.progress.pages_skipped_robots += 1
                     continue
                 job.mark_claimed(canon, item.depth)
-                in_flight.add(asyncio.create_task(fetch_one(item, params, router, sem)))
+                in_flight.add(asyncio.create_task(fetch_one(item, params, router, sem, throttle)))
 
             if not in_flight:
                 break  # nothing claimable left this pass
