@@ -65,6 +65,7 @@ class Progress:
     pages_skipped_cache: int = 0
     pages_skipped_robots: int = 0
     pages_skipped_filter: int = 0
+    pages_skipped_ads: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -372,6 +373,11 @@ class Job:
         if ok:
             self.mark_completed(url)
             self.progress.pages_fetched += 1
+        elif result.get("error_code") == ErrorCode.URL_BLOCKED.value:
+            # A blocked ad/tracker URL is an intentional policy skip (design §7
+            # "expected branch"), not a fetch failure — count it separately so
+            # crawl-status doesn't inflate pages_failed / errors_tail with it.
+            self.progress.pages_skipped_ads += 1
         else:
             self.progress.pages_failed += 1
             self.errors_tail.append(

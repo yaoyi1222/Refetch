@@ -46,6 +46,8 @@ class ErrorCode(str, Enum):
     # interactively confirm. CACHE_FLAG_CONFLICT covers >1 mutually-exclusive scope.
     CACHE_CLEAR_NO_SCOPE = "CACHE_CLEAR_NO_SCOPE"
     UNKNOWN = "UNKNOWN"
+    # v0.4 — ad/tracker domain blocking
+    URL_BLOCKED = "URL_BLOCKED"
 
 
 class FetchError(Exception):

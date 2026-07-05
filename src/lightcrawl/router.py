@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from . import auth, content as content_mod, fetch_browser, fetch_http, fetch_pdf
 from .cache import Cache, CacheHit
 from .errors import ErrorCode, FetchError
-from .url_safety import domain_matches, validate_url
+from .url_safety import domain_matches, etld1, is_ad_domain, validate_url
 
 Strategy = Literal["auto", "http", "browser", "authed"]
 
@@ -85,6 +85,8 @@ class FetchRequest:
     cache_only: bool = False
     store_in_cache: bool = False
     no_cache: bool = False
+    # v0.4 PR-2 — silently drop requests to known ad/tracker domains.
+    block_ads: bool = False
 
 
 def _now_iso() -> str:
@@ -396,6 +398,15 @@ class Router:
         except FetchError as e:
             return _failure(req.url, e.code, e.detail, attempts=[])
 
+        # v0.4 PR-2 — ad/tracker domain block (opt-in via block_ads=True).
+        # Runs after SSRF validation (URL is safe) but before any fetch attempt.
+        if req.block_ads and is_ad_domain(req.url):
+            return _failure(
+                req.url, ErrorCode.URL_BLOCKED,
+                f"ad/tracker domain blocked: {etld1(req.url)}",
+                attempts=[],
+            )
+
         attempts: list[Attempt] = []
 
         # PR 2.3 — cache entry hook. SSRF and binary checks above run
@@ -609,6 +620,7 @@ class Router:
                     mobile=req.mobile,
                     screenshot=req.output_format in _SCREENSHOT_FORMATS,
                     actions=req.actions,
+                    block_ads=req.block_ads,
                 ),
                 timeout=req.timeout_ms / 1000.0,
             )

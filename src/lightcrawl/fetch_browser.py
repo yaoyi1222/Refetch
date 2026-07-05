@@ -23,6 +23,7 @@ from .actions import (
     WriteAction as _WriteAction,
 )
 from .errors import ErrorCode, FetchError
+from .url_safety import is_ad_domain
 
 _STEALTH = Stealth()
 
@@ -169,6 +170,7 @@ async def fetch(
     mobile: bool = False,
     screenshot: bool = False,
     actions: list | None = None,
+    block_ads: bool = False,
 ) -> BrowserResult:
     """L2 fetch via Playwright with stealth always enabled.
 
@@ -199,6 +201,18 @@ async def fetch(
             # default Referer/Accept-Language here, swap to a manual merge.
             await ctx.set_extra_http_headers(headers)
         page = await ctx.new_page()
+        if block_ads:
+            # v0.4 PR-2 — abort ad/tracker sub-requests during page load.
+            # This is the coverage the top-level URL check can't give: GA/GTM/
+            # doubleclick etc. are loaded as sub-resources by the page, never as
+            # the fetch URL itself. Registered before goto so it catches the
+            # very first wave of requests.
+            async def _block_ad_route(route):
+                if is_ad_domain(route.request.url):
+                    await route.abort()
+                else:
+                    await route.continue_()
+            await page.route("**/*", _block_ad_route)
         try:
             response = await page.goto(
                 url,

@@ -356,6 +356,7 @@ async def _run_fetch(args: argparse.Namespace) -> int:
         exclude_tags=_clean_tags(getattr(args, "exclude_tags", None)),
         mobile=bool(getattr(args, "mobile", False)),
         actions=parsed_actions,
+        block_ads=bool(getattr(args, "block_ads", False)),
         # v0.3 PR 2.4 — cache controls (design §3). ``fetch`` defaults to
         # store_in_cache=False so v0.2 callers stay byte-identical.
         **_resolve_cache_kwargs(args, default_store_in_cache=False),
@@ -484,6 +485,7 @@ def _resolve_crawl_params(args: argparse.Namespace) -> crawl.CrawlParams:
         output_format=args.output_format,
         profile=args.profile,
         throttle_delay_ms=getattr(args, "throttle_delay_ms", 0),
+        block_ads=getattr(args, "block_ads", False),
         **cache,
     )
 
@@ -657,6 +659,7 @@ async def _run_batch_fetch(args: argparse.Namespace) -> int:
         profile=args.profile,
         max_inline_tokens=args.max_inline_tokens,
         timeout_ms=args.timeout_ms,
+        block_ads=getattr(args, "block_ads", False),
         **_resolve_cached_cache_kwargs(args),
     )
     router = Router()
@@ -879,6 +882,11 @@ def _add_fetch_parser(sub: argparse._SubParsersAction) -> None:
             ',"label":"post-click"}]\'. Non-empty actions force L2 (browser).'
         ),
     )
+    p.add_argument(
+        "--block-ads", dest="block_ads", action="store_true",
+        help="block known ad/tracker domains: drops a top-level ad URL and, on "
+             "browser (L2/L3) fetches, aborts ad/tracker sub-requests",
+    )
     _add_cache_flags(p)
     p.set_defaults(func=_cmd_fetch)
 
@@ -1009,6 +1017,12 @@ def _add_crawl_parser(sub: argparse._SubParsersAction) -> None:
         "--throttle-delay-ms", dest="throttle_delay_ms", type=int, default=0,
         help="minimum milliseconds between fetches to the same host (default: 0, disabled)",
     )
+    p.add_argument(
+        "--block-ads", dest="block_ads", action="store_true",
+        help="block known ad/tracker domains: drops a top-level ad URL and, on "
+             "browser (L2/L3) fetches, aborts ad/tracker sub-requests (e.g. "
+             "google-analytics.com, doubleclick.net)",
+    )
     _add_cache_flags(p)
     p.set_defaults(func=_cmd_crawl)
 
@@ -1067,6 +1081,11 @@ def _add_batch_fetch_parser(sub: argparse._SubParsersAction) -> None:
         help="per-result token budget; overflow goes to a dump file",
     )
     p.add_argument("--timeout-ms", dest="timeout_ms", type=int, default=30_000)
+    p.add_argument(
+        "--block-ads", dest="block_ads", action="store_true",
+        help="block known ad/tracker domains: drops a top-level ad URL and, on "
+             "browser (L2/L3) fetches, aborts ad/tracker sub-requests",
+    )
     _add_cache_flags(p)
     p.set_defaults(func=_cmd_batch_fetch)
 

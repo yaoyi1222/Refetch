@@ -160,8 +160,6 @@ def test_record_uses_full_content_hash_key_not_recomputed(tmp_path, monkeypatch)
 
 async def test_cache_hit_exposes_full_content_hash(router, tmp_path, monkeypatch):
     """_success_from_cache must emit full_content_hash so jobs.record() never writes null."""
-    from lightcrawl.cache import Cache
-
     monkeypatch.setattr("lightcrawl.paths.CACHE_ROOT", tmp_path / "cache")
     (tmp_path / "cache").mkdir()
 
