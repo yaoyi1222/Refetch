@@ -5,7 +5,8 @@ import pytest
 from unittest.mock import patch
 
 from lightcrawl.errors import ErrorCode, FetchError
-from lightcrawl.router import FetchRequest, Router, _AD_DOMAINS
+from lightcrawl.router import FetchRequest, Router
+from lightcrawl.url_safety import _AD_DOMAINS, is_ad_domain
 from lightcrawl.crawl import CrawlParams
 from lightcrawl.batch import BatchParams
 
@@ -96,3 +97,142 @@ def test_batch_params_block_ads_defaults_false():
 def test_url_blocked_error_code_exists():
     """ErrorCode.URL_BLOCKED must exist with the string value 'URL_BLOCKED'."""
     assert ErrorCode.URL_BLOCKED.value == "URL_BLOCKED"
+
+
+# ---- is_ad_domain helper ---------------------------------------------------
+
+
+def test_is_ad_domain_matches_subdomains_and_ignores_others():
+    assert is_ad_domain("https://www.google-analytics.com/ga.js") is True
+    assert is_ad_domain("https://stats.g.doubleclick.net/x") is True
+    assert is_ad_domain("https://example.com/page") is False
+
+
+# ---- page.route sub-resource abort (the plan-A core) -----------------------
+
+
+async def test_block_ads_registers_route_and_aborts_ad_subrequests(monkeypatch):
+    """block_ads=True must register a page.route handler that aborts ad/tracker
+    sub-requests and lets everything else through. This is the coverage the
+    top-level URL check cannot give (GA/GTM load as sub-resources)."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lightcrawl import fetch_browser as fb
+
+    registered: dict = {}
+
+    fake_response = MagicMock(status=200, headers={"content-type": "text/html"})
+    fake_page = AsyncMock()
+    fake_page.goto = AsyncMock(return_value=fake_response)
+    fake_page.content = AsyncMock(
+        return_value="<html><body><article><p>" + "x" * 250 + "</p></article></body></html>"
+    )
+    fake_page.close = AsyncMock()
+    fake_page.url = "https://example.com/"
+
+    async def fake_route(pattern, handler):
+        registered["pattern"] = pattern
+        registered["handler"] = handler
+    fake_page.route = fake_route
+
+    fake_ctx = AsyncMock()
+    fake_ctx.new_page = AsyncMock(return_value=fake_page)
+
+    @asynccontextmanager
+    async def fake_context(self, *, storage_state=None, **kwargs):
+        yield fake_ctx
+
+    pool = fb.BrowserPool()
+    with patch.object(fb.BrowserPool, "context", fake_context), \
+         patch.object(fb._STEALTH, "apply_stealth_async", AsyncMock()):
+        await fb.fetch(pool, "https://example.com/", block_ads=True)
+
+    assert registered.get("pattern") == "**/*"
+    handler = registered["handler"]
+
+    # Ad sub-request → abort; normal sub-request → continue.
+    ad_route = AsyncMock()
+    ad_route.request = MagicMock(url="https://www.google-analytics.com/collect")
+    await handler(ad_route)
+    ad_route.abort.assert_awaited_once()
+    ad_route.continue_.assert_not_awaited()
+
+    ok_route = AsyncMock()
+    ok_route.request = MagicMock(url="https://example.com/app.js")
+    await handler(ok_route)
+    ok_route.continue_.assert_awaited_once()
+    ok_route.abort.assert_not_awaited()
+
+
+async def test_block_ads_off_registers_no_route(monkeypatch):
+    """Default (block_ads=False) must NOT register a page.route handler — every
+    fetch would otherwise pay the interception cost."""
+    from contextlib import asynccontextmanager
+    from unittest.mock import AsyncMock, MagicMock
+
+    from lightcrawl import fetch_browser as fb
+
+    route_calls = {"n": 0}
+    fake_response = MagicMock(status=200, headers={"content-type": "text/html"})
+    fake_page = AsyncMock()
+    fake_page.goto = AsyncMock(return_value=fake_response)
+    fake_page.content = AsyncMock(
+        return_value="<html><body><article><p>" + "x" * 250 + "</p></article></body></html>"
+    )
+    fake_page.close = AsyncMock()
+    fake_page.url = "https://example.com/"
+
+    async def fake_route(pattern, handler):
+        route_calls["n"] += 1
+    fake_page.route = fake_route
+
+    fake_ctx = AsyncMock()
+    fake_ctx.new_page = AsyncMock(return_value=fake_page)
+
+    @asynccontextmanager
+    async def fake_context(self, *, storage_state=None, **kwargs):
+        yield fake_ctx
+
+    pool = fb.BrowserPool()
+    with patch.object(fb.BrowserPool, "context", fake_context), \
+         patch.object(fb._STEALTH, "apply_stealth_async", AsyncMock()):
+        await fb.fetch(pool, "https://example.com/")  # default block_ads=False
+
+    assert route_calls["n"] == 0
+
+
+# ---- crawl job accounting: URL_BLOCKED is a skip, not a failure ------------
+
+
+def test_record_url_blocked_counts_as_skipped_not_failed(tmp_path, monkeypatch):
+    """jobs.record() must count a URL_BLOCKED result under pages_skipped_ads,
+    leaving pages_failed and errors_tail untouched."""
+    from lightcrawl import jobs
+
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+
+    job.record({
+        "ok": False,
+        "url": "https://doubleclick.net/pixel",
+        "error_code": ErrorCode.URL_BLOCKED.value,
+    })
+
+    assert job.progress.pages_skipped_ads == 1
+    assert job.progress.pages_failed == 0
+    assert job.errors_tail == []
+
+
+def test_record_real_failure_still_counts_as_failed(tmp_path, monkeypatch):
+    """A genuine fetch failure must still land in pages_failed / errors_tail."""
+    from lightcrawl import jobs
+
+    monkeypatch.setattr(jobs, "time_ms", lambda: 5)
+    job = jobs.Job.create("crawl", {}, jobs_dir=tmp_path)
+
+    job.record({"ok": False, "url": "https://ex.com/x", "error_code": "TIMEOUT"})
+
+    assert job.progress.pages_failed == 1
+    assert job.progress.pages_skipped_ads == 0
+    assert len(job.errors_tail) == 1

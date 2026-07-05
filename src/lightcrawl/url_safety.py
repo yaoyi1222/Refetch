@@ -46,6 +46,27 @@ def domain_matches(target_url: str, bound_etld1: str) -> bool:
     return etld1(target_url) == bound_etld1
 
 
+# v0.4 PR-2 — ad/tracker domain blocklist. Lives here (not router) so both the
+# router's top-level URL check and fetch_browser's page.route sub-resource
+# handler can share one list without a circular import. Matched against eTLD+1.
+_AD_DOMAINS: frozenset[str] = frozenset({
+    "googletagmanager.com",   # NOTE: can break SPAs that lazy-load via GTM
+    "google-analytics.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "facebook.net",
+    "fbcdn.net",
+    "hotjar.com",
+    "optimizely.com",
+})
+
+
+def is_ad_domain(url: str) -> bool:
+    """True if the URL's eTLD+1 is a known ad/tracker domain."""
+    return etld1(url) in _AD_DOMAINS
+
+
 def _is_private_ip(ip: str) -> bool:
     try:
         addr = ipaddress.ip_address(ip)

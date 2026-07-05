@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import time
 
-import pytest
 from lightcrawl.throttle import DomainThrottle
 from lightcrawl.crawl import CrawlParams
 

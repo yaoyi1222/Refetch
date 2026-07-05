@@ -228,7 +228,7 @@ async def test_actions_passed_to_fetch_browser():
 
     async def fake_browser_fetch(pool, url, *, wait_for=None, timeout=None,
                                 storage_state=None, headers=None, mobile=None,
-                                screenshot=None, actions=None):
+                                screenshot=None, actions=None, block_ads=False):
         # Capture the actions kwarg
         fake_browser_fetch.captured_actions = actions
         return BrowserResult(

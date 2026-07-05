@@ -356,6 +356,7 @@ async def _run_fetch(args: argparse.Namespace) -> int:
         exclude_tags=_clean_tags(getattr(args, "exclude_tags", None)),
         mobile=bool(getattr(args, "mobile", False)),
         actions=parsed_actions,
+        block_ads=bool(getattr(args, "block_ads", False)),
         # v0.3 PR 2.4 — cache controls (design §3). ``fetch`` defaults to
         # store_in_cache=False so v0.2 callers stay byte-identical.
         **_resolve_cache_kwargs(args, default_store_in_cache=False),
@@ -880,6 +881,11 @@ def _add_fetch_parser(sub: argparse._SubParsersAction) -> None:
             'Example: \'[{"type":"click","selector":"#btn"},{"type":"screenshot"'
             ',"label":"post-click"}]\'. Non-empty actions force L2 (browser).'
         ),
+    )
+    p.add_argument(
+        "--block-ads", dest="block_ads", action="store_true",
+        help="block known ad/tracker domains: drops a top-level ad URL and, on "
+             "browser (L2/L3) fetches, aborts ad/tracker sub-requests",
     )
     _add_cache_flags(p)
     p.set_defaults(func=_cmd_fetch)
